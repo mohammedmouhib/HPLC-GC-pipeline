@@ -203,7 +203,11 @@ HPLC_GC_pipeline/
 │   ├── calibration.py        # area → concentration
 │   ├── stats.py              # replicate statistics
 │   ├── plotting_chromatograms.py  # Stage 1 plots
-│   └── plotting_dashboard.py      # Stage 2 dashboard
+│   ├── plotting_dashboard.py      # Stage 2 dashboard
+│   └── gui/                 # optional Streamlit web GUI (`hplc gui`)
+│       ├── app.py           # the Streamlit app
+│       ├── launch.py        # starts `streamlit run`
+│       └── config_template.yaml  # seeds a new experiment's config
 ├── config/config.example.yaml
 ├── examples/                 # sample compounds.csv + standard.csv
 ├── tools/agilent_to_csv.py   # optional standalone converter

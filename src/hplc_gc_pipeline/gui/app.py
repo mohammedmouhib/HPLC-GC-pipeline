@@ -6,7 +6,7 @@ three input files and the same CLI the pipeline already uses:
     1. Edit hplc_config.yaml + compounds.csv + standard.csv in the browser.
     2. "Apply" writes them back to the experiment folder (YAML comments kept).
     3. Run buttons call `hplc process/analyze/run` and stream the log.
-    4. Result links open the output HTML files in the browser.
+    4. Result links open / preview / download the output HTML files.
 
 Nothing about the processing backend changes: the GUI only touches the files
 and invokes the CLI.
@@ -17,11 +17,13 @@ from __future__ import annotations
 import subprocess
 import sys
 import webbrowser
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
@@ -86,9 +88,36 @@ def _int_list(text: str):
     return [int(t) for t in items] or None
 
 
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _file_meta(path: Path) -> str:
+    stat = path.stat()
+    when = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+    return f"{_human_size(stat.st_size)} · {when}"
+
+
+def _count_d_folders(root: Path) -> int:
+    """Count .D folders directly under root or one level of subfolders."""
+    if not root.is_dir():
+        return 0
+    n = len(list(root.glob("*.D")))
+    n += len(list(root.glob("*/*.D")))
+    return n
+
+
 # --------------------------------------------------------------------------
-# State: load the three files into widget-backing session state
+# State
 # --------------------------------------------------------------------------
+def _mark_dirty() -> None:
+    st.session_state.dirty = True
+
+
 def load_into_state(exp: Path) -> None:
     doc = load_config_doc(exp)
     st.session_state.doc = doc
@@ -109,10 +138,10 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_bartp = ", ".join(str(x) for x in (cfg_get(doc, ["plots", "bar_time_points"], []) or []))
     st.session_state.compounds_df = read_csv_or_empty(exp / "compounds.csv", COMPOUND_COLS)
     st.session_state.standard_df = read_csv_or_empty(exp / "standard.csv", STANDARD_COLS)
-    # Reset the data-editor widgets so they re-seed from the reloaded frames.
     st.session_state.pop("ed_compounds", None)
     st.session_state.pop("ed_standard", None)
     st.session_state.loaded_exp = str(exp)
+    st.session_state.dirty = False
 
 
 def apply_changes(exp: Path, compounds_df, standard_df) -> tuple[bool, str]:
@@ -141,12 +170,12 @@ def apply_changes(exp: Path, compounds_df, standard_df) -> tuple[bool, str]:
     compounds_df.dropna(how="all").to_csv(exp / "compounds.csv", index=False)
     standard_df.dropna(how="all").to_csv(exp / "standard.csv", index=False)
 
-    # Validate by loading through the real config machinery.
     try:
         from hplc_gc_pipeline.config import load_config
         load_config(exp)
     except Exception as exc:  # noqa: BLE001 - surface any validation error verbatim
         return False, f"Files written, but config is invalid: {exc}"
+    st.session_state.dirty = False
     return True, "All three files written and the config validates."
 
 
@@ -161,15 +190,14 @@ def run_stage(exp: Path, subcommand: str) -> int:
     box = st.empty()
     lines: list[str] = []
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     assert proc.stdout is not None
     for raw in proc.stdout:
         if any(n in raw for n in NOISE):
             continue
         lines.append(raw.rstrip())
-        box.code("\n".join(lines[-400:]), language="text")
+        box.code("\n".join(lines[-500:]), language="text")
     proc.wait()
     st.session_state.last_log = "\n".join(lines)
     return proc.returncode
@@ -178,8 +206,8 @@ def run_stage(exp: Path, subcommand: str) -> int:
 # --------------------------------------------------------------------------
 # UI
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="HPLC pipeline", layout="wide")
-st.title("HPLC pipeline")
+st.set_page_config(page_title="HPLC pipeline", page_icon="🧪", layout="wide")
+st.title("🧪 HPLC pipeline")
 
 with st.sidebar:
     st.header("Experiment folder")
@@ -204,44 +232,60 @@ if "doc" not in st.session_state:
 
 exp = Path(st.session_state.loaded_exp)
 
+# ---- Sidebar status panel ------------------------------------------------
+with st.sidebar:
+    st.divider()
+    st.subheader("Status")
+    data_root = exp / st.session_state.w_datadir if st.session_state.w_datadir else exp
+    n_d = _count_d_folders(data_root)
+    st.markdown(f"**Input files**")
+    for fname in ("hplc_config.yaml", "compounds.csv", "standard.csv"):
+        p = exp / fname
+        st.write(("✅ " if p.exists() else "⬜ ") + fname)
+    st.write(f"🧬 `.D` injections found: **{n_d}**")
+    if st.session_state.get("dirty"):
+        st.warning("Unsaved parameter edits — click **Apply**.")
+
 tab_params, tab_run = st.tabs(["1 · Parameters", "2 · Run & results"])
 
 with tab_params:
     st.subheader("Processing (Stage 1)")
     c1, c2, c3 = st.columns(3)
-    c1.number_input("Wavelength (nm)", key="w_wavelength", step=1)
-    c2.text_input("Blank .D folder", key="w_blank", placeholder="e.g. 091-0202.D  (blank = none)")
-    c3.text_input("Data subfolder", key="w_datadir", placeholder="e.g. Data  (blank = experiment root)")
+    c1.number_input("Wavelength (nm)", key="w_wavelength", step=1, on_change=_mark_dirty)
+    c2.text_input("Blank .D folder", key="w_blank",
+                  placeholder="e.g. 091-0202.D  (blank = none)", on_change=_mark_dirty)
+    c3.text_input("Data subfolder", key="w_datadir",
+                  placeholder="e.g. Data  (blank = experiment root)", on_change=_mark_dirty)
     c4, c5, c6 = st.columns(3)
-    c4.checkbox("Deconvolution enabled", key="w_deconv")
-    c5.number_input("Min R² to accept fit", key="w_minr2", step=0.01, format="%.2f")
-    c6.number_input("Max components / peak", key="w_maxcomps", step=1)
+    c4.checkbox("Deconvolution enabled", key="w_deconv", on_change=_mark_dirty)
+    c5.number_input("Min R² to accept fit", key="w_minr2", step=0.01, format="%.2f", on_change=_mark_dirty)
+    c6.number_input("Max components / peak", key="w_maxcomps", step=1, on_change=_mark_dirty)
 
     st.subheader("Analysis (Stage 2)")
     a1, a2 = st.columns(2)
-    a1.checkbox("Exclude peaks outside all RT windows", key="w_excl")
-    a2.number_input("CV%% warning threshold", key="w_cv", step=1.0)
+    a1.checkbox("Exclude peaks outside all RT windows", key="w_excl", on_change=_mark_dirty)
+    a2.number_input("CV%% warning threshold", key="w_cv", step=1.0, on_change=_mark_dirty)
     a3, a4 = st.columns(2)
-    a3.checkbox("Clamp negative concentrations to 0", key="w_clamp")
-    a4.checkbox("Zero area → 0 µM (recommended fix)", key="w_zero")
-    st.text_input("Sample-name regex", key="w_pattern")
+    a3.checkbox("Clamp negative concentrations to 0", key="w_clamp", on_change=_mark_dirty)
+    a4.checkbox("Zero area → 0 µM (recommended fix)", key="w_zero", on_change=_mark_dirty)
+    st.text_input("Sample-name regex", key="w_pattern", on_change=_mark_dirty)
 
     st.subheader("Plots")
     p1, p2, p3, p4 = st.columns(4)
-    p1.number_input("Grid columns", key="w_ncols", step=1, min_value=1)
-    p2.text_input("Plot strains", key="w_strains", placeholder="all (comma-separated)")
-    p3.text_input("Strain order", key="w_order", placeholder="alphabetical")
-    p4.text_input("Bar time points", key="w_bartp", placeholder="all (e.g. 0, 24, 50)")
+    p1.number_input("Grid columns", key="w_ncols", step=1, min_value=1, on_change=_mark_dirty)
+    p2.text_input("Plot strains", key="w_strains", placeholder="all (comma-separated)", on_change=_mark_dirty)
+    p3.text_input("Strain order", key="w_order", placeholder="alphabetical", on_change=_mark_dirty)
+    p4.text_input("Bar time points", key="w_bartp", placeholder="all (e.g. 0, 24, 50)", on_change=_mark_dirty)
 
     st.subheader("compounds.csv — retention-time windows")
     compounds_df = st.data_editor(
         st.session_state.compounds_df, num_rows="dynamic",
-        use_container_width=True, key="ed_compounds",
+        use_container_width=True, key="ed_compounds", on_change=_mark_dirty,
     )
     st.subheader("standard.csv — calibration points")
     standard_df = st.data_editor(
         st.session_state.standard_df, num_rows="dynamic",
-        use_container_width=True, key="ed_standard",
+        use_container_width=True, key="ed_standard", on_change=_mark_dirty,
     )
 
     if st.button("💾  Apply — write all three files", type="primary"):
@@ -250,7 +294,8 @@ with tab_params:
 
 with tab_run:
     st.caption(f"Experiment folder: `{exp}`")
-    st.warning("Click **Apply** on the Parameters tab first if you changed anything.")
+    if st.session_state.get("dirty"):
+        st.warning("You have unsaved parameter edits — go to **Parameters** and click **Apply** first.")
     r1, r2, r3 = st.columns(3)
     go_process = r1.button("▶  Process (Stage 1)", use_container_width=True)
     go_analyze = r2.button("▶  Analyze (Stage 2)", use_container_width=True)
@@ -260,9 +305,10 @@ with tab_run:
         sub = "process" if go_process else "analyze" if go_analyze else "run"
         with st.spinner(f"Running `hplc {sub}` …"):
             code = run_stage(exp, sub)
-        (st.success if code == 0 else st.error)(
-            f"`hplc {sub}` finished (exit {code})."
-        )
+        (st.success if code == 0 else st.error)(f"`hplc {sub}` finished (exit {code}).")
+    elif st.session_state.get("last_log"):
+        with st.expander("Last run log"):
+            st.code(st.session_state.last_log, language="text")
 
     st.subheader("Results")
     results_dir = cfg_get(st.session_state.doc, ["output", "results_dirname"], "results")
@@ -274,11 +320,16 @@ with tab_run:
     }
     any_found = False
     for label, path in outputs.items():
-        if path.exists():
-            any_found = True
-            cols = st.columns([1, 4])
-            if cols[0].button(f"Open ↗", key=f"open_{label}"):
-                webbrowser.open(path.resolve().as_uri())
-            cols[1].caption(f"{label} — `{path}`")
+        if not path.exists():
+            continue
+        any_found = True
+        st.markdown(f"**{label}** — <small>`{path}` · {_file_meta(path)}</small>", unsafe_allow_html=True)
+        b1, b2, b3 = st.columns([1, 1, 5])
+        if b1.button("Open ↗", key=f"open_{label}"):
+            webbrowser.open(path.resolve().as_uri())
+        b2.download_button("Download", data=path.read_bytes(),
+                           file_name=path.name, mime="text/html", key=f"dl_{label}")
+        if b3.toggle("Preview inline", key=f"prev_{label}"):
+            components.html(path.read_text(encoding="utf-8"), height=800, scrolling=True)
     if not any_found:
         st.info("No result files yet — run a stage above.")
