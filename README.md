@@ -50,7 +50,9 @@ pip install -e .          # installs deps and the `hplc` command
    ```
 
 Use `--config /some/other.yaml` to point at a config file outside the
-experiment folder.
+experiment folder. On a mistake (missing/invalid config, bad path) the command
+prints a single-line `Error: …`; add `--debug` to any subcommand to see the
+full traceback.
 
 ## Input interface
 
