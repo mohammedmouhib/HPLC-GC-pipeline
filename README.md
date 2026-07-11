@@ -28,7 +28,10 @@ pip install -e .          # installs deps and the `hplc` command
 ## Quick start
 
 1. Create an **experiment folder** containing your Agilent `.D` folders (either
-   directly, or grouped one level deep in run subfolders).
+   directly, or grouped one level deep in run subfolders). If your raw data
+   lives in a nested subfolder (e.g. `Data/<run>/*.D`) that you'd rather not
+   move, keep the config/CSVs/outputs at the experiment root and set
+   `processing.data_dir: Data` in the config (see below).
 2. Copy the config template and reference tables into it:
 
    ```bash
@@ -125,6 +128,7 @@ controls and its default. The most common knobs:
 |---|---|
 | `processing.wavelength_nm` | Detector wavelength to integrate |
 | `processing.blank_folder_name` | `.D` folder of the blank (`null` if none) |
+| `processing.data_dir` | Subfolder holding raw `.D` data (`null` = experiment root) |
 | `analysis.exclude_unknown` | Drop peaks outside all RT windows |
 | `analysis.cv_warning_threshold` | CV% above which a warning prints |
 | `plots.plot_strains` | Subset of strains to plot (`null` = all) |

@@ -47,6 +47,22 @@ def test_overrides_are_read(tmp_path):
     assert cfg.plots.n_cols == 3
 
 
+def test_data_dir_resolves_data_root(tmp_path):
+    # When data_dir is set, raw data is discovered under <exp>/<data_dir> while
+    # outputs/CSVs stay at the experiment root.
+    _write_config(tmp_path, "processing:\n  data_dir: Data\n")
+    cfg = load_config(tmp_path)
+    assert cfg.processing.data_dir == "Data"
+    assert cfg.data_root == tmp_path / "Data"
+
+
+def test_data_root_defaults_to_experiment_dir(tmp_path):
+    _write_config(tmp_path, "")
+    cfg = load_config(tmp_path)
+    assert cfg.processing.data_dir is None
+    assert cfg.data_root == tmp_path
+
+
 def test_unknown_key_raises(tmp_path):
     _write_config(tmp_path, "processing:\n  wavelenght_nm: 262\n")  # typo
     with pytest.raises(ValueError, match="Unknown config key"):

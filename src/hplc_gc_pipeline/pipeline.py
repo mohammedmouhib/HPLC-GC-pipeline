@@ -25,7 +25,7 @@ def run_processing(cfg: Config) -> None:
     results_dir = cfg.results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset = processing.load_dataset(cfg.experiment_dir, cfg.processing)
+    dataset = processing.load_dataset(cfg.data_root, cfg.processing)
     dataset = processing.process_dataset(dataset, cfg.processing)
 
     print("\n" + "=" * 70)

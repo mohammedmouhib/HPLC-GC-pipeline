@@ -56,6 +56,10 @@ class ProcessingConfig:
     wavelength_nm: int = 262
     # .D folder name of the blank injection (with .D suffix); null = no blank.
     blank_folder_name: Optional[str] = None
+    # Subfolder (relative to the experiment dir) that holds the raw .D data.
+    # null = the experiment dir itself. Use this when raw data lives in a
+    # nested folder (e.g. "Data") while config/CSVs/outputs stay at the root.
+    data_dir: Optional[str] = None
     peak_detection: PeakDetectionConfig = field(default_factory=PeakDetectionConfig)
     deconvolution: DeconvolutionConfig = field(default_factory=DeconvolutionConfig)
 
@@ -132,6 +136,13 @@ class Config:
     experiment_dir: Optional[Path] = None
 
     # --- Convenience path accessors (all under experiment_dir) -------------
+    @property
+    def data_root(self) -> Path:
+        """Folder scanned for raw .D injections (experiment_dir/<data_dir>)."""
+        if self.processing.data_dir:
+            return self.experiment_dir / self.processing.data_dir
+        return self.experiment_dir
+
     @property
     def results_dir(self) -> Path:
         return self.experiment_dir / self.output.results_dirname
@@ -237,6 +248,7 @@ def _build_processing(data: Any) -> ProcessingConfig:
     return ProcessingConfig(
         wavelength_nm=data.get("wavelength_nm", ProcessingConfig.wavelength_nm),
         blank_folder_name=data.get("blank_folder_name"),
+        data_dir=data.get("data_dir"),
         peak_detection=_from_dict(PeakDetectionConfig, data.get("peak_detection")),
         deconvolution=_from_dict(DeconvolutionConfig, data.get("deconvolution")),
     )

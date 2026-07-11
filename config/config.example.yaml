@@ -20,6 +20,13 @@ processing:
   # Set to null (or omit) if the run has no blank.
   blank_folder_name: null
 
+  # Subfolder (relative to the experiment folder) that holds the raw .D data.
+  # null (or omit) = the experiment folder itself. Set this when raw data sits
+  # in a nested folder (e.g. "Data") while config, CSVs, and outputs stay at
+  # the experiment root. The pipeline still finds .D folders either directly
+  # under this location or one level of run subfolders below it.
+  data_dir: null
+
   # MOCCA2 find_peaks() parameters. Leave a value null to use MOCCA2's own
   # default for that parameter; set a number to override it.
   peak_detection:
