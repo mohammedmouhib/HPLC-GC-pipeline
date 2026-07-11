@@ -1,0 +1,102 @@
+# ==========================================================================
+# HPLC_GC_pipeline configuration (the "input interface")
+# --------------------------------------------------------------------------
+# Copy this file into an experiment folder as `hplc_config.yaml`, then edit
+# the values for that run. Every field is optional; omitted fields fall back
+# to the default shown here. Paths are resolved relative to the experiment
+# folder, so nothing here points at a fixed location on disk.
+#
+#   hplc process <experiment_dir>   # Stage 1: .D folders  -> peak table + plots
+#   hplc analyze <experiment_dir>   # Stage 2: peak table  -> stats + dashboard
+#   hplc run     <experiment_dir>   # both stages
+# ==========================================================================
+
+# ── Stage 1: raw .D folder processing ─────────────────────────────────────
+processing:
+  # Wavelength (nm) to extract from the DAD detector for integration.
+  wavelength_nm: 262
+
+  # .D folder name of the blank injection (include the .D suffix).
+  # Set to null (or omit) if the run has no blank.
+  blank_folder_name: null
+
+  # Subfolder (relative to the experiment folder) that holds the raw .D data.
+  # null (or omit) = the experiment folder itself. Set this when raw data sits
+  # in a nested folder (e.g. "Data") while config, CSVs, and outputs stay at
+  # the experiment root. The pipeline still finds .D folders either directly
+  # under this location or one level of run subfolders below it.
+  data_dir: null
+
+  # MOCCA2 find_peaks() parameters. Leave a value null to use MOCCA2's own
+  # default for that parameter; set a number to override it.
+  peak_detection:
+    min_height: null          # minimum peak height (mAU)
+    min_prominence: null      # minimum peak prominence
+    min_width: null           # minimum peak width (data points)
+    distance: null            # minimum spacing between peaks (data points)
+
+  # Peak deconvolution. If it fails, peaks are still integrated by the manual
+  # trapezoid fallback, so disabling it only changes the integration path.
+  deconvolution:
+    enabled: true
+    models: ["FraserSuzuki", "Gaussian"]  # tried in order after MOCCA2's auto pass
+    min_r2: 0.95              # minimum fit quality to accept a model
+    max_comps: 5             # max components fitted per peak
+
+# ── Stage 2: analysis ─────────────────────────────────────────────────────
+analysis:
+  # Reference tables, relative to the experiment folder.
+  compounds_file: "compounds.csv"   # columns: Compound, RT_low, RT_high [, Notes]
+  standard_file:  "standard.csv"    # columns: Compound, Area_Integral, concentration
+
+  # Drop peaks that fall outside every compound RT window.
+  exclude_unknown: true
+
+  # Print a warning for any replicate group whose CV% exceeds this value.
+  cv_warning_threshold: 15.0
+
+  calibration:
+    # A linear fit can predict negative concentration near the origin; clamp to 0.
+    clamp_negative_to_zero: true
+    # Report undetected compounds (area == 0) as 0 uM instead of the fit's
+    # intercept b. Fixes the "pCA ~15 uM at zero area" artefact. Set false to
+    # reproduce the original (pre-fix) numbers exactly.
+    zero_area_zero_conc: true
+
+  sample_name:
+    # Named-group regex parsing sample names into time / strain / replicate.
+    # Default expects: "<time_h>, <strain>, <replicate>"  e.g. "24, s1, A".
+    # Must define groups: time (int), strain, replicate (single letter).
+    pattern: '^\s*(?P<time>\d+)\s*,\s*(?P<strain>[^,]+?)\s*,\s*(?P<replicate>[A-Za-z])\s*$'
+
+# ── Plotting (operational settings only; aesthetics are code defaults) ─────
+plots:
+  # Explicit strain order controlling colour assignment. null -> alphabetical.
+  strain_order: null
+
+  # Subset of strains to include in the dashboard. null -> all strains.
+  # Example: ["medium", "s1", "s10", "s11"]
+  plot_strains: null
+
+  # Restrict bar charts to these time points (h). null -> all time points.
+  # Example: [0, 24, 50]
+  bar_time_points: null
+
+  # Number of plot columns in the grid layout.
+  n_cols: 2
+
+  # Ordered colour palette (hex). Strains/replicates cycle through it.
+  palette:
+    - "#377eb8"
+    - "#e41a1c"
+    - "#984ea3"
+    - "#4daf4a"
+    - "#ff7f00"
+    - "#000000"
+    - "#a65628"
+    - "#f781bf"
+
+# ── Output layout (subfolders created inside the experiment folder) ────────
+output:
+  results_dirname: "results"     # Stage 1 outputs
+  analysis_dirname: "analysis"   # Stage 2 outputs

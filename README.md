@@ -57,6 +57,21 @@ experiment folder. On a mistake (missing/invalid config, bad path) the command
 prints a single-line `Error: …`; add `--debug` to any subcommand to see the
 full traceback.
 
+## Web GUI (optional)
+
+A browser GUI wraps the whole workflow — edit the config and both CSVs, write
+them with one button, run any stage, and open the result HTMLs — without
+touching the backend (it edits the same three files and calls the same CLI).
+
+```bash
+pip install -e ".[gui]"          # one-time: installs streamlit + ruamel.yaml
+hplc gui /path/to/experiment     # opens http://localhost:8501 in your browser
+```
+
+The experiment folder is optional (`hplc gui`) — you can set it in the sidebar.
+`--port` changes the port. It binds to `localhost` only. YAML comments are
+preserved when the GUI saves the config.
+
 ## Input interface
 
 Everything the pipeline needs lives in the experiment folder:

@@ -19,8 +19,21 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+# Web GUI (`hplc gui`). Not needed for the CLI pipeline; install with:
+#   pip install -e ".[gui]"
+gui = [
+    "streamlit>=1.30",
+    "ruamel.yaml>=0.17",  # round-trip YAML that preserves the template comments
+]
+
 [project.scripts]
 hplc = "hplc_gc_pipeline.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the commented config template inside the package so the GUI can seed a
+# new experiment's hplc_config.yaml with docs intact, regardless of install mode.
+hplc_gc_pipeline = ["gui/config_template.yaml"]

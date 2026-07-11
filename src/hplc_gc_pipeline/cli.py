@@ -46,11 +46,21 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Config YAML (default: <experiment_dir>/hplc_config.yaml)")
         sp.add_argument("--debug", action="store_true",
                         help="Show the full traceback on error")
+
+    gp = sub.add_parser("gui", help="Launch the web GUI (needs the 'gui' extra)")
+    gp.add_argument("experiment_dir", type=Path, nargs="?", default=None,
+                    help="Experiment folder to preload (optional; can be set in the GUI)")
+    gp.add_argument("--port", type=int, default=8501, help="Local port (default 8501)")
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "gui":
+        from .gui.launch import launch_gui
+        return launch_gui(args.experiment_dir, port=args.port)
+
     try:
         cfg = load_config(args.experiment_dir, args.config)
         if args.command == "process":
