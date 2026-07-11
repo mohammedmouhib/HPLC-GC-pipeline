@@ -20,6 +20,11 @@ from pathlib import Path
 from .config import load_config
 from . import pipeline
 
+# Errors caused by user input (bad paths, missing or invalid config). These get
+# a clean one-line message; anything else is treated as an unexpected bug and
+# shown with a full traceback (or via --debug).
+USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -39,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("experiment_dir", type=Path, help="Path to the experiment folder")
         sp.add_argument("--config", type=Path, default=None,
                         help="Config YAML (default: <experiment_dir>/hplc_config.yaml)")
+        sp.add_argument("--debug", action="store_true",
+                        help="Show the full traceback on error")
     return parser
 
 
@@ -52,9 +59,17 @@ def main(argv=None) -> int:
             pipeline.run_analysis(cfg)
         elif args.command == "run":
             pipeline.run_all(cfg)
+    except USER_ERRORS as exc:
+        if args.debug:
+            traceback.print_exc()
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
-        print(f"\n{'=' * 70}\nERROR\n{'=' * 70}\n{exc}\n", file=sys.stderr)
+        # Unexpected failure: show the traceback so it can be reported/fixed.
+        print(f"\n{'=' * 70}\nUNEXPECTED ERROR\n{'=' * 70}\n{exc}\n", file=sys.stderr)
         traceback.print_exc()
+        print("\nRe-run with --debug for the full traceback, or report this.",
+              file=sys.stderr)
         return 1
     return 0
 
