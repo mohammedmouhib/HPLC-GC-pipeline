@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hplc-gc-pipeline"
+version = "0.1.0"
+description = "Config-driven HPLC (MOCCA2) data-processing pipeline for metabolic engineering experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mocca2",
+    "rainbow-api",
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "bokeh",
+    "pyyaml",
+]
+
+[project.scripts]
+hplc = "hplc_gc_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

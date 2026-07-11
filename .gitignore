@@ -1,0 +1,44 @@
+# ── Experiment data & pipeline outputs (never belong in the program repo) ──
+# Data lives in separate experiment folders elsewhere; keep it out of git.
+Data/
+data/
+*.D/
+results/
+analysis/
+Results1/
+analysis_results/
+*.CSV
+*.ch
+*.UV
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.installed.cfg
+*.egg
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+ENV/
+
+# ── Caches / tooling ──
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ── OS / editor ──
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# ── Allow the example/reference tables to be tracked ──
+!examples/*.csv

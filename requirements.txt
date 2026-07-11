@@ -1,0 +1,8 @@
+# Core pipeline dependencies. See pyproject.toml for the installable package.
+mocca2
+rainbow-api        # imported as `rainbow`; used by the optional .ch->CSV tool
+pandas
+numpy
+matplotlib
+bokeh
+pyyaml
