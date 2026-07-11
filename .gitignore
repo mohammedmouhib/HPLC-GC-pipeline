@@ -42,3 +42,7 @@ Thumbs.db
 
 # ── Allow the example/reference tables to be tracked ──
 !examples/*.csv
+
+# ── Streamlit agent skills (environment-specific symlinks, do not commit) ──
+.agents/
+.claude/

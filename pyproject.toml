@@ -34,6 +34,10 @@ hplc = "hplc_gc_pipeline.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-# Ship the commented config template inside the package so the GUI can seed a
-# new experiment's hplc_config.yaml with docs intact, regardless of install mode.
-hplc_gc_pipeline = ["gui/config_template.yaml"]
+# Ship the commented config template + example CSVs inside the package so the
+# GUI can seed a new experiment's three input files, regardless of install mode.
+hplc_gc_pipeline = [
+    "gui/config_template.yaml",
+    "gui/compounds_default.csv",
+    "gui/standard_default.csv",
+]
