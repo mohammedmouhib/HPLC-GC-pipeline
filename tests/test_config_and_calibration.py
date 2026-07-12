@@ -111,3 +111,83 @@ def test_uncalibrated_compound_is_nan():
 def test_normal_conversion():
     cfg = CalibrationConfig()
     assert area_to_concentration(100.0, "FA", CAL, cfg) == pytest.approx(0.18 * 100 + 5.0)
+
+
+# --- GC: config / modality detection ---------------------------------------
+
+def test_no_gc_block_is_hplc_only(tmp_path):
+    _write_config(tmp_path, "processing:\n  wavelength_nm: 262\n")
+    cfg = load_config(tmp_path)
+    assert cfg.modalities == ["hplc"]
+    assert cfg.gc is None
+
+
+def test_gc_only_experiment(tmp_path):
+    _write_config(tmp_path, """
+        gc:
+          data_dir: Data
+          calibration:
+            source: injections
+            dilution_factor: 10.0
+    """)
+    cfg = load_config(tmp_path)
+    assert cfg.modalities == ["gc"]
+    assert cfg.gc.calibration.dilution_factor == 10.0
+    assert cfg.gc.processing.quant_channel == "eic"
+    assert cfg.gc_data_root == tmp_path / "Data"
+
+
+def test_both_modalities(tmp_path):
+    _write_config(tmp_path, """
+        processing:
+          wavelength_nm: 262
+        gc:
+          calibration:
+            source: csv
+    """)
+    cfg = load_config(tmp_path)
+    assert cfg.modalities == ["hplc", "gc"]
+
+
+def test_gc_bad_quant_channel_raises(tmp_path):
+    _write_config(tmp_path, "gc:\n  processing:\n    quant_channel: mass\n")
+    with pytest.raises(ValueError, match="quant_channel"):
+        load_config(tmp_path)
+
+
+def test_gc_unknown_key_raises(tmp_path):
+    _write_config(tmp_path, "gc:\n  dilution_factor: 10\n")  # belongs under calibration
+    with pytest.raises(ValueError, match="Unknown config key"):
+        load_config(tmp_path)
+
+
+# --- GC: calibration --------------------------------------------------------
+
+def test_parse_standard_name_units():
+    from hplc_gc_pipeline.gc_calibration import parse_standard_name, GCCalibrationConfig
+    pat = GCCalibrationConfig().standard_pattern
+    assert parse_standard_name("250uM_34DMS_hexane", pat) == ("34DMS", 250.0)
+    assert parse_standard_name("1mM_34DMS_5etac_95hexane", pat) == ("34DMS", 1000.0)
+    # A sample name is not a standard.
+    assert parse_standard_name("50_s11_A", pat) is None
+
+
+def test_gc_calibration_fit_and_predict():
+    from hplc_gc_pipeline.gc_calibration import _fit
+    # area = 60*conc exactly.
+    cal = _fit([(50, 3000), (100, 6000), (250, 15000)])
+    assert cal.slope == pytest.approx(60.0)
+    assert cal.r2 == pytest.approx(1.0)
+    assert cal.predict(6000) == pytest.approx((6000 - cal.intercept) / 60.0)
+
+
+def test_gc_force_through_origin_removes_floor():
+    from hplc_gc_pipeline.gc_calibration import _fit
+    # Points implying a negative intercept; forcing origin must give 0 at area 0.
+    pts = [(50, 3000), (100, 6100), (250, 14900)]
+    free = _fit(pts, force_origin=False)
+    forced = _fit(pts, force_origin=True)
+    assert forced.intercept == 0.0
+    assert forced.predict(0.0) == 0.0
+    # Free fit's non-zero intercept would predict a non-zero conc at area 0.
+    assert free.predict(0.0, clamp_negative=False) != 0.0

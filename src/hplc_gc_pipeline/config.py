@@ -22,6 +22,9 @@ from typing import Any, Optional
 
 import yaml
 
+from .gc_processing import GCProcessingConfig, GCPeakDetectionConfig, GCBaselineConfig
+from .gc_calibration import GCCalibrationConfig
+
 # Name of the config file looked up inside an experiment folder when no
 # explicit --config path is given.
 DEFAULT_CONFIG_FILENAME = "hplc_config.yaml"
@@ -125,11 +128,44 @@ class OutputConfig:
 
 
 @dataclass
+class GCSampleNameConfig:
+    # GC sample names use underscores: "<time_h>_<strain>_<replicate>" (e.g.
+    # "50_s11_A"), unlike the comma-separated HPLC convention. Standards
+    # ("250uM_34DMS_hexane") don't match and are skipped.
+    pattern: str = (
+        r"^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(?P<replicate>[A-Za-z])\s*$"
+    )
+
+
+@dataclass
+class GCConfig:
+    """Settings for the GC-MS modality (present only when the config has a
+    ``gc:`` block). Mirrors the HPLC blocks but with GC-specific processing,
+    calibration, and an underscore sample-name convention."""
+    # Subfolder holding the raw GC .D data (relative to the experiment dir, or
+    # absolute). null = the experiment dir itself.
+    data_dir: Optional[str] = None
+    # GC compound table (adds quantifier_mz / qualifier_mz columns).
+    compounds_file: str = "gc_compounds.csv"
+    processing: GCProcessingConfig = field(default_factory=GCProcessingConfig)
+    calibration: GCCalibrationConfig = field(default_factory=GCCalibrationConfig)
+    sample_name: GCSampleNameConfig = field(default_factory=GCSampleNameConfig)
+    cv_warning_threshold: float = 15.0
+    results_dirname: str = "gc_results"
+    analysis_dirname: str = "gc_analysis"
+
+
+@dataclass
 class Config:
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     plots: PlotsConfig = field(default_factory=PlotsConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    # GC modality settings; None when the config has no ``gc:`` block.
+    gc: Optional[GCConfig] = None
+    # Active modalities for this experiment, derived from which blocks the YAML
+    # contains. Set by load_config(); not read directly from YAML.
+    modalities: list[str] = field(default_factory=lambda: ["hplc"])
 
     # Absolute path to the experiment directory this config was loaded for.
     # Populated by load_config(); not read from YAML.
@@ -162,6 +198,31 @@ class Config:
     @property
     def standard_path(self) -> Path:
         return self.experiment_dir / self.analysis.standard_file
+
+    # --- GC path accessors (only valid when self.gc is set) ----------------
+    @property
+    def gc_data_root(self) -> Path:
+        """Folder scanned for raw GC .D injections."""
+        if self.gc and self.gc.data_dir:
+            p = Path(self.gc.data_dir).expanduser()
+            return p if p.is_absolute() else self.experiment_dir / self.gc.data_dir
+        return self.experiment_dir
+
+    @property
+    def gc_results_dir(self) -> Path:
+        return self.experiment_dir / self.gc.results_dirname
+
+    @property
+    def gc_analysis_dir(self) -> Path:
+        return self.experiment_dir / self.gc.analysis_dirname
+
+    @property
+    def gc_peak_results_csv(self) -> Path:
+        return self.gc_results_dir / "peak_results.csv"
+
+    @property
+    def gc_compounds_path(self) -> Path:
+        return self.experiment_dir / self.gc.compounds_file
 
 
 # ---------------------------------------------------------------------------
@@ -227,15 +288,31 @@ def load_config(experiment_dir: Path, explicit_config: Optional[Path] = None) ->
     with open(config_path, "r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
 
+    # An experiment may include HPLC data, GC data, or both. Which modalities
+    # are active is inferred from which blocks the YAML contains:
+    #   * HPLC: a top-level `processing`/`analysis` (legacy flat form) or an
+    #     explicit `hplc:` block.
+    #   * GC:   a `gc:` block.
+    # A config with none of these defaults to HPLC (backward compatible).
+    hplc_block = raw.get("hplc") if isinstance(raw.get("hplc"), dict) else raw
+    modalities = []
+    if any(k in raw for k in ("hplc", "processing", "analysis")):
+        modalities.append("hplc")
+    if "gc" in raw:
+        modalities.append("gc")
+    if not modalities:
+        modalities = ["hplc"]
+
     # ProcessingConfig / AnalysisConfig need their own nested handling because
-    # they contain further dataclasses; _from_dict recurses one level using the
-    # annotated field types, so build the top level explicitly.
+    # they contain further dataclasses; build them explicitly.
     cfg = Config(
-        processing=_build_processing(raw.get("processing")),
-        analysis=_build_analysis(raw.get("analysis")),
+        processing=_build_processing(hplc_block.get("processing")),
+        analysis=_build_analysis(hplc_block.get("analysis")),
         plots=_from_dict(PlotsConfig, raw.get("plots")),
         output=_from_dict(OutputConfig, raw.get("output")),
+        gc=_build_gc(raw.get("gc")) if "gc" in raw else None,
     )
+    cfg.modalities = modalities
     cfg.experiment_dir = experiment_dir
 
     _validate(cfg)
@@ -268,6 +345,33 @@ def _build_analysis(data: Any) -> AnalysisConfig:
     )
 
 
+def _build_gc(data: Any) -> GCConfig:
+    data = data or {}
+    _check_keys(data, GCConfig, "gc")
+    defaults = GCConfig()
+    return GCConfig(
+        data_dir=data.get("data_dir"),
+        compounds_file=data.get("compounds_file", defaults.compounds_file),
+        processing=_build_gc_processing(data.get("processing")),
+        calibration=_from_dict(GCCalibrationConfig, data.get("calibration")),
+        sample_name=_from_dict(GCSampleNameConfig, data.get("sample_name")),
+        cv_warning_threshold=data.get("cv_warning_threshold", defaults.cv_warning_threshold),
+        results_dirname=data.get("results_dirname", defaults.results_dirname),
+        analysis_dirname=data.get("analysis_dirname", defaults.analysis_dirname),
+    )
+
+
+def _build_gc_processing(data: Any) -> GCProcessingConfig:
+    data = data or {}
+    _check_keys(data, GCProcessingConfig, "gc.processing")
+    defaults = GCProcessingConfig()
+    return GCProcessingConfig(
+        quant_channel=data.get("quant_channel", defaults.quant_channel),
+        peak_detection=_from_dict(GCPeakDetectionConfig, data.get("peak_detection")),
+        baseline=_from_dict(GCBaselineConfig, data.get("baseline")),
+    )
+
+
 def _check_keys(data: dict, cls, name: str) -> None:
     allowed = {f.name for f in fields(cls)}
     unknown = set(data) - allowed
@@ -286,3 +390,10 @@ def _validate(cfg: Config) -> None:
         raise ValueError("plots.n_cols must be >= 1")
     if cfg.analysis.cv_warning_threshold < 0:
         raise ValueError("analysis.cv_warning_threshold must be >= 0")
+    if cfg.gc is not None:
+        if cfg.gc.processing.quant_channel not in ("eic", "tic", "fid"):
+            raise ValueError("gc.processing.quant_channel must be 'eic', 'tic', or 'fid'")
+        if cfg.gc.calibration.source not in ("injections", "csv"):
+            raise ValueError("gc.calibration.source must be 'injections' or 'csv'")
+        if cfg.gc.calibration.dilution_factor <= 0:
+            raise ValueError("gc.calibration.dilution_factor must be positive")

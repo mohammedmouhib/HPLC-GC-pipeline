@@ -100,3 +100,64 @@ plots:
 output:
   results_dirname: "results"     # Stage 1 outputs
   analysis_dirname: "analysis"   # Stage 2 outputs
+
+# ── GC-MS modality (optional) ─────────────────────────────────────────────
+# Add a `gc:` block to process GC-MS .D injections. The blocks above cover the
+# HPLC/DAD run; this block covers the GC run. An experiment may have HPLC only
+# (omit this block), GC only (omit the `processing:`/`analysis:` blocks above),
+# or both (keep both) -- when both are present a combined dashboard is written
+# to `combined_analysis/`. Compounds are matched to instruments by which
+# compound table they appear in.
+#
+# Remove this block entirely if the experiment has no GC data.
+gc:
+  # Subfolder with the raw GC .D data (relative to the experiment folder, or an
+  # absolute path). null/omit = the experiment folder itself.
+  data_dir: "GC_data"
+
+  # GC compound table. Like compounds.csv but with extra columns:
+  #   Compound, RT_low, RT_high, quantifier_mz [, qualifier_mz, ion_ratio_tol, Notes]
+  #   quantifier_mz : m/z of the ion integrated for quantification
+  #   qualifier_mz  : confirming ions, e.g. "149=0.40;91=0.36" (=expected ratio)
+  #   ion_ratio_tol : relative tolerance on those ratios (default 0.30)
+  compounds_file: "gc_compounds.csv"
+
+  processing:
+    # Trace integrated per compound:
+    #   eic = quantifier-ion extracted chromatogram (most selective; default)
+    #   tic = total ion current   |   fid = flame-ionization detector
+    quant_channel: eic
+    peak_detection:
+      min_snr: 5.0          # apex must exceed this * noise to count as detected
+      edge_fraction: 0.01   # peak edge as a fraction of apex height
+    baseline:               # asymmetric least squares baseline
+      lam: 100000.0         # smoothness
+      p: 0.01               # asymmetry (small -> hugs the lower envelope)
+      niter: 10
+
+  calibration:
+    # Where the standard curve comes from:
+    #   injections = integrate standard .D folders, decoding concentration from
+    #                the sample name via standard_pattern
+    #   csv        = read standard_file (Compound, concentration, Area_Integral)
+    source: injections
+    standard_pattern: '^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)'
+    standard_file: "gc_standard.csv"
+    # GC samples are commonly diluted before injection; multiply sample (not
+    # standard) concentrations by this to recover the original sample. 1:10 -> 10.
+    dilution_factor: 1.0
+    # Fit area = slope*conc through the origin (recommended for trace GC-MS;
+    # avoids a non-zero concentration at zero area from a negative intercept).
+    force_through_origin: false
+    clamp_negative_to_zero: true
+    # Report samples whose qualifier ion-ratio failed confirmation as 0 uM.
+    require_ion_ratio_pass: false
+
+  # GC sample names use underscores: "<time_h>_<strain>_<replicate>" (e.g.
+  # "50_s11_A"), unlike the comma-separated HPLC convention.
+  sample_name:
+    pattern: '^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(?P<replicate>[A-Za-z])\s*$'
+
+  cv_warning_threshold: 15.0
+  results_dirname: "gc_results"
+  analysis_dirname: "gc_analysis"

@@ -1,13 +1,14 @@
 """
 Command-line interface.
 
-    hplc process  <experiment_dir> [--config FILE]   # Stage 1
-    hplc analyze  <experiment_dir> [--config FILE]   # Stage 2
-    hplc run      <experiment_dir> [--config FILE]   # both stages
+    hplc process  <experiment_dir> [--config FILE] [--modality M]   # Stage 1
+    hplc analyze  <experiment_dir> [--config FILE] [--modality M]   # Stage 2
+    hplc run      <experiment_dir> [--config FILE] [--modality M]   # both stages
 
 The experiment directory is the only required argument; all tunable values come
 from its ``hplc_config.yaml`` (or the file given with --config). Outputs are
-written back into the experiment directory.
+written back into the experiment directory. ``--modality`` restricts a run to
+one instrument (hplc / gc); by default every modality the config defines runs.
 """
 
 from __future__ import annotations
@@ -44,6 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("experiment_dir", type=Path, help="Path to the experiment folder")
         sp.add_argument("--config", type=Path, default=None,
                         help="Config YAML (default: <experiment_dir>/hplc_config.yaml)")
+        sp.add_argument("--modality", choices=["hplc", "gc", "both"], default=None,
+                        help="Restrict to one modality (default: every modality the "
+                             "config defines).")
         sp.add_argument("--debug", action="store_true",
                         help="Show the full traceback on error")
 
@@ -52,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Experiment folder to preload (optional; can be set in the GUI)")
     gp.add_argument("--port", type=int, default=8501, help="Local port (default 8501)")
     return parser
+
+
+def _apply_modality_filter(cfg, modality) -> None:
+    """Narrow cfg.modalities to the one requested on the CLI, if any."""
+    if modality is None or modality == "both":
+        return
+    if modality not in cfg.modalities:
+        raise ValueError(
+            f"--modality {modality} requested, but the config defines no "
+            f"'{modality}' block (active: {cfg.modalities})."
+        )
+    cfg.modalities = [modality]
 
 
 def main(argv=None) -> int:
@@ -63,6 +79,7 @@ def main(argv=None) -> int:
 
     try:
         cfg = load_config(args.experiment_dir, args.config)
+        _apply_modality_filter(cfg, args.modality)
         if args.command == "process":
             pipeline.run_processing(cfg)
         elif args.command == "analyze":

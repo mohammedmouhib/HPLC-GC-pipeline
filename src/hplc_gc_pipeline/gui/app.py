@@ -36,8 +36,13 @@ HERE = Path(__file__).parent
 PKG_TEMPLATE = HERE / "config_template.yaml"
 PKG_COMPOUNDS = HERE / "compounds_default.csv"
 PKG_STANDARD = HERE / "standard_default.csv"
+PKG_GC_COMPOUNDS = HERE / "gc_compounds_default.csv"
 COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "Notes"]
 STANDARD_COLS = ["Compound", "Area_Integral", "concentration"]
+GC_COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "quantifier_mz",
+                    "qualifier_mz", "ion_ratio_tol", "Notes"]
+GC_SAMPLE_PATTERN_DEFAULT = r"^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(?P<replicate>[A-Za-z])\s*$"
+GC_STANDARD_PATTERN_DEFAULT = r"^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)"
 
 
 # --------------------------------------------------------------------------
@@ -184,19 +189,37 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_results_dir = g(["output", "results_dirname"], "results")
     st.session_state.w_analysis_dir = g(["output", "analysis_dirname"], "analysis")
 
+    # GC modality (only present when the config has a `gc:` block)
+    st.session_state.w_gc_enabled = "gc" in doc
+    st.session_state.w_gc_datadir = g(["gc", "data_dir"], "") or ""
+    st.session_state.w_gc_compounds_file = g(["gc", "compounds_file"], "gc_compounds.csv")
+    st.session_state.w_gc_quant_channel = g(["gc", "processing", "quant_channel"], "eic")
+    st.session_state.w_gc_cal_source = g(["gc", "calibration", "source"], "injections")
+    st.session_state.w_gc_std_pattern = g(["gc", "calibration", "standard_pattern"], GC_STANDARD_PATTERN_DEFAULT)
+    st.session_state.w_gc_std_file = g(["gc", "calibration", "standard_file"], "gc_standard.csv")
+    st.session_state.w_gc_dilution = float(g(["gc", "calibration", "dilution_factor"], 1.0))
+    st.session_state.w_gc_force_origin = bool(g(["gc", "calibration", "force_through_origin"], False))
+    st.session_state.w_gc_clamp = bool(g(["gc", "calibration", "clamp_negative_to_zero"], True))
+    st.session_state.w_gc_require_ratio = bool(g(["gc", "calibration", "require_ion_ratio_pass"], False))
+    st.session_state.w_gc_pattern = g(["gc", "sample_name", "pattern"], GC_SAMPLE_PATTERN_DEFAULT)
+    st.session_state.w_gc_cv = float(g(["gc", "cv_warning_threshold"], 15.0))
+
     # CSVs (seed from packaged examples if the folder has none)
     cfile = st.session_state.w_compounds_file
     sfile = st.session_state.w_standard_file
     st.session_state.compounds_df, st.session_state.compounds_seeded = read_csv_or_default(exp / cfile, PKG_COMPOUNDS, COMPOUND_COLS)
     st.session_state.standard_df, st.session_state.standard_seeded = read_csv_or_default(exp / sfile, PKG_STANDARD, STANDARD_COLS)
+    gcfile = st.session_state.w_gc_compounds_file
+    st.session_state.gc_compounds_df, st.session_state.gc_compounds_seeded = read_csv_or_default(exp / gcfile, PKG_GC_COMPOUNDS, GC_COMPOUND_COLS)
 
-    for k in ("ed_compounds", "ed_standard", "w_strains_ms", "w_bartp_ms"):
+    for k in ("ed_compounds", "ed_standard", "ed_gc_compounds", "w_strains_ms", "w_bartp_ms"):
         st.session_state.pop(k, None)
     st.session_state.loaded_exp = str(exp)
     st.session_state.dirty = False
 
 
-def apply_changes(exp: Path, compounds_df, standard_df, plot_strains, bar_time_points) -> tuple[bool, str]:
+def apply_changes(exp: Path, compounds_df, standard_df, gc_compounds_df,
+                  plot_strains, bar_time_points) -> tuple[bool, str]:
     doc = st.session_state.doc
     s = st.session_state
     cfg_set(doc, ["processing", "wavelength_nm"], int(s.w_wavelength))
@@ -225,12 +248,31 @@ def apply_changes(exp: Path, compounds_df, standard_df, plot_strains, bar_time_p
     cfg_set(doc, ["output", "results_dirname"], s.w_results_dir or "results")
     cfg_set(doc, ["output", "analysis_dirname"], s.w_analysis_dir or "analysis")
 
+    # GC modality: write the `gc:` block when enabled, drop it when not.
+    if s.w_gc_enabled:
+        cfg_set(doc, ["gc", "data_dir"], s.w_gc_datadir or None)
+        cfg_set(doc, ["gc", "compounds_file"], s.w_gc_compounds_file)
+        cfg_set(doc, ["gc", "processing", "quant_channel"], s.w_gc_quant_channel)
+        cfg_set(doc, ["gc", "calibration", "source"], s.w_gc_cal_source)
+        cfg_set(doc, ["gc", "calibration", "standard_pattern"], s.w_gc_std_pattern)
+        cfg_set(doc, ["gc", "calibration", "standard_file"], s.w_gc_std_file)
+        cfg_set(doc, ["gc", "calibration", "dilution_factor"], float(s.w_gc_dilution))
+        cfg_set(doc, ["gc", "calibration", "force_through_origin"], bool(s.w_gc_force_origin))
+        cfg_set(doc, ["gc", "calibration", "clamp_negative_to_zero"], bool(s.w_gc_clamp))
+        cfg_set(doc, ["gc", "calibration", "require_ion_ratio_pass"], bool(s.w_gc_require_ratio))
+        cfg_set(doc, ["gc", "sample_name", "pattern"], s.w_gc_pattern)
+        cfg_set(doc, ["gc", "cv_warning_threshold"], float(s.w_gc_cv))
+    elif "gc" in doc:
+        del doc["gc"]
+
     exp.mkdir(parents=True, exist_ok=True)
     buf = StringIO()
     yaml.dump(doc, buf)
     (exp / "hplc_config.yaml").write_text(buf.getvalue(), encoding="utf-8")
     compounds_df.dropna(how="all").to_csv(exp / s.w_compounds_file, index=False)
     standard_df.dropna(how="all").to_csv(exp / s.w_standard_file, index=False)
+    if s.w_gc_enabled:
+        gc_compounds_df.dropna(how="all").to_csv(exp / s.w_gc_compounds_file, index=False)
 
     try:
         from hplc_gc_pipeline.config import load_config
@@ -238,8 +280,8 @@ def apply_changes(exp: Path, compounds_df, standard_df, plot_strains, bar_time_p
     except Exception as exc:  # noqa: BLE001
         return False, f"Files written, but config is invalid: {exc}"
     s.dirty = False
-    s.compounds_seeded = s.standard_seeded = False
-    return True, "All three files written and the config validates."
+    s.compounds_seeded = s.standard_seeded = s.gc_compounds_seeded = False
+    return True, "Files written and the config validates."
 
 
 # --------------------------------------------------------------------------
@@ -418,8 +460,56 @@ with tab_params:
         standard_df = st.data_editor(st.session_state.standard_df, num_rows="dynamic",
                                      key="ed_standard", on_change=_mark_dirty)
 
+    # ---- GC-MS modality --------------------------------------------------
+    with st.container(border=True):
+        st.subheader("GC-MS modality  ·  optional")
+        st.checkbox("Enable GC-MS processing (adds a `gc:` block)",
+                    key="w_gc_enabled", on_change=_mark_dirty)
+        gc_compounds_df = st.session_state.gc_compounds_df
+        if st.session_state.w_gc_enabled:
+            g1, g2, g3 = st.columns(3)
+            g1.text_input("GC data subfolder", key="w_gc_datadir",
+                          placeholder="e.g. GC_data (blank = root)", on_change=_mark_dirty)
+            g2.selectbox("Quantification channel", ["eic", "tic", "fid"],
+                         key="w_gc_quant_channel", on_change=_mark_dirty,
+                         help="eic = quantifier-ion chromatogram (most selective).")
+            g3.number_input("Dilution factor (samples)", key="w_gc_dilution",
+                            min_value=0.0, step=1.0, on_change=_mark_dirty,
+                            help="Samples are commonly diluted 1:10 → 10. Standards are not scaled.")
+            c1, c2, c3 = st.columns(3)
+            c1.selectbox("Calibration source", ["injections", "csv"],
+                         key="w_gc_cal_source", on_change=_mark_dirty,
+                         help="injections = integrate standard .D folders; csv = a standard table.")
+            c2.checkbox("Force fit through origin", key="w_gc_force_origin", on_change=_mark_dirty,
+                        help="area = slope·conc; avoids non-zero conc at zero area.")
+            c3.checkbox("Require ion-ratio pass", key="w_gc_require_ratio", on_change=_mark_dirty,
+                        help="Report ion-ratio-unconfirmed samples as 0 µM.")
+            with st.expander("GC advanced — patterns, file names, thresholds"):
+                st.text_input("GC sample-name regex", key="w_gc_pattern", on_change=_mark_dirty,
+                              help='Groups: time, strain, replicate. Default: "50_s11_A".')
+                st.text_input("Standard-name regex (source = injections)", key="w_gc_std_pattern",
+                              on_change=_mark_dirty,
+                              help="Groups: conc, unit, compound. e.g. 250uM_34DMS_hexane.")
+                e1, e2 = st.columns(2)
+                e1.text_input("GC compounds file name", key="w_gc_compounds_file", on_change=_mark_dirty)
+                e2.text_input("GC standard CSV (source = csv)", key="w_gc_std_file", on_change=_mark_dirty)
+                x1, x2 = st.columns(2)
+                x1.checkbox("Clamp negative conc. to 0", key="w_gc_clamp", on_change=_mark_dirty)
+                x2.number_input("GC CV%% warning threshold", key="w_gc_cv", step=1.0, on_change=_mark_dirty)
+            if st.session_state.get("gc_compounds_seeded"):
+                st.caption("No GC compounds file in the folder yet — showing example values; apply to save.")
+            st.markdown("**gc_compounds.csv** — RT windows + quantifier / qualifier m/z")
+            st.caption('qualifier_mz e.g. "149=0.40;91=0.36" (=expected ratio); '
+                       "ion_ratio_tol = relative tolerance.")
+            gc_compounds_df = st.data_editor(st.session_state.gc_compounds_df, num_rows="dynamic",
+                                             key="ed_gc_compounds", on_change=_mark_dirty)
+        else:
+            st.caption("Enable to process GC-MS `.D` data alongside (or instead of) HPLC. "
+                       "When both run, a combined dashboard is written to `combined_analysis/`.")
+
     if st.button("Apply changes", type="primary", icon=":material/save:"):
-        ok, msg = apply_changes(exp, compounds_df, standard_df, plot_strains, bar_time_points)
+        ok, msg = apply_changes(exp, compounds_df, standard_df, gc_compounds_df,
+                                plot_strains, bar_time_points)
         (st.success if ok else st.error)(msg)
 
 # ==========================================================================
@@ -459,28 +549,51 @@ if tab_results.open:
     dashboard = exp / analysis_dir / "analysis_plots.html"
     overlay = exp / results_dir / "chromatogram_overlay_interactive.html"
     gallery = exp / results_dir / "chromatogram_gallery.html"
+    # GC + combined outputs (fixed default folder names).
+    gc_dashboard = exp / "gc_analysis" / "analysis_plots.html"
+    gc_overlay = exp / "gc_results" / "gc_tic_overlay_interactive.html"
+    gc_gallery = exp / "gc_results" / "chromatogram_gallery.html"
+    combined = exp / "combined_analysis" / "analysis_plots.html"
 
-    if not any(p.exists() for p in (dashboard, overlay, gallery)):
+    hplc_files = (dashboard, overlay, gallery)
+    gc_files = (gc_dashboard, gc_overlay, gc_gallery)
+
+    if not any(p.exists() for p in (*hplc_files, *gc_files, combined)):
         st.info("No result files yet — run a stage on the **Run** tab.")
     else:
-        st.subheader("Analysis dashboard")
-        if dashboard.exists():
-            output_row("Analysis dashboard", dashboard)
-            embed_html(dashboard, height=900)
-        else:
-            st.caption("Run **Analyze** to generate the dashboard.")
-
-        st.divider()
-        st.subheader("Chromatogram overlay (interactive)")
-        if overlay.exists():
-            output_row("Interactive overlay", overlay)
-            embed_html(overlay, height=650)
-        else:
-            st.caption("Run **Process** to generate the overlay.")
-
-        if gallery.exists():
+        if combined.exists():
+            st.subheader("Combined HPLC + GC dashboard")
+            output_row("Combined dashboard", combined)
+            embed_html(combined, height=900)
             st.divider()
-            st.subheader("Per-injection chromatogram gallery")
-            output_row("Chromatogram gallery", gallery)
-            with st.expander("Preview gallery inline"):
-                embed_html(gallery, height=820)
+
+        if any(p.exists() for p in hplc_files):
+            st.subheader("HPLC — analysis dashboard")
+            if dashboard.exists():
+                output_row("HPLC dashboard", dashboard)
+                embed_html(dashboard, height=900)
+            if overlay.exists():
+                st.markdown("**Chromatogram overlay (interactive)**")
+                output_row("HPLC interactive overlay", overlay)
+                embed_html(overlay, height=650)
+            if gallery.exists():
+                st.markdown("**Per-injection chromatogram gallery**")
+                output_row("HPLC chromatogram gallery", gallery)
+                with st.expander("Preview gallery inline"):
+                    embed_html(gallery, height=820)
+
+        if any(p.exists() for p in gc_files):
+            st.divider()
+            st.subheader("GC-MS — analysis dashboard")
+            if gc_dashboard.exists():
+                output_row("GC dashboard", gc_dashboard)
+                embed_html(gc_dashboard, height=900)
+            if gc_overlay.exists():
+                st.markdown("**TIC overlay (interactive)**")
+                output_row("GC TIC overlay", gc_overlay)
+                embed_html(gc_overlay, height=650)
+            if gc_gallery.exists():
+                st.markdown("**Per-injection EIC gallery**")
+                output_row("GC chromatogram gallery", gc_gallery)
+                with st.expander("Preview GC gallery inline"):
+                    embed_html(gc_gallery, height=820)

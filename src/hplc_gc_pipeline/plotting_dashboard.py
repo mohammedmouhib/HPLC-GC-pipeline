@@ -110,7 +110,10 @@ def _grid_layout(plots, n_cols=2):
         while len(chunk) < n_cols:
             chunk.append(None)
         rows.append(chunk)
-    return gridplot(rows, sizing_mode="fixed")
+    # No sizing_mode: the child figures carry fixed width/height, so the grid
+    # sizes to them. Passing "fixed" here (without grid dimensions) triggers a
+    # W-1005 warning when a row is padded with an empty cell.
+    return gridplot(rows)
 
 
 def _combos(consolidated_df):
@@ -352,7 +355,11 @@ def generate_plots(consolidated_df, stats_df, analysis_dir: Path,
     grid_combined = _grid_layout(combined_area + combined_conc, n_cols)
     grid_bars = _grid_layout(bars_area + bars_conc, n_cols)
 
-    layout = column(grid_summary, grid_raw, grid_combined, grid_bars, sizing_mode="fixed")
+    # No sizing_mode on the wrapping column: its gridplot children carry their
+    # own fixed sizes, and forcing "fixed" here without width/height triggers a
+    # Bokeh W-1005 warning (harmless but noisy, and hit whenever a grid has an
+    # odd number of plots).
+    layout = column(grid_summary, grid_raw, grid_combined, grid_bars)
     bokeh.io.save(layout)
 
     print(f"\n  Saved: {html_path}")

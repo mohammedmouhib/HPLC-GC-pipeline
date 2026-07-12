@@ -1,9 +1,8 @@
 # HPLC_GC_pipeline
 
-A reusable, config-driven pipeline for HPLC data from metabolic engineering
-experiments. It processes Agilent Chemstation `.D` injection folders, detects
-and integrates chromatographic peaks with [MOCCA2](https://github.com/bayer-group/MOCCA),
-assigns peaks to named compounds by retention-time window, applies linear
+A reusable, config-driven pipeline for **HPLC and GC-MS** data from metabolic
+engineering experiments. It processes Agilent Chemstation `.D` injection folders,
+integrates chromatographic peaks, assigns them to named compounds, applies linear
 calibration curves to convert areas to µM concentrations, and generates
 publication-quality plots.
 
@@ -11,8 +10,24 @@ The program is fully separated from experiment data: you point it at any
 experiment folder, and every tunable value lives in that folder's
 `hplc_config.yaml`. Nothing is hardcoded to a particular dataset or machine.
 
-> The name reserves room for future GC support; today the implemented pipeline
-> is the HPLC/MOCCA2 path described here.
+## Two modalities in one interface
+
+An experiment can contain HPLC data, GC-MS data, or both — each compound is
+quantified by whichever instrument you configure for it. The two paths differ:
+
+- **HPLC** — integrates a DAD wavelength with [MOCCA2](https://github.com/bayer-group/MOCCA)
+  (deconvolution, with a trapezoid fallback); peaks are assigned to compounds by
+  retention-time window.
+- **GC-MS** — reads SIM `.D` data with [rainbow](https://github.com/evanyeyeye/rainbow)
+  and quantifies each compound on its **quantifier-ion extracted chromatogram
+  (EIC)**, confirming identity from the **qualifier-ion ratios**. Calibration can
+  come from dedicated standard `.D` injections or a CSV, and a **dilution factor**
+  converts the measured concentration back to the original sample.
+
+Both flow through the same Stage-2 statistics and plotting. When both run, a
+**combined dashboard** shows every compound side by side, tagged by instrument.
+Add a `gc:` block to the config (see `config/config.example.yaml`) to enable GC;
+omit it for HPLC-only. Use `--modality hplc|gc` to run just one.
 
 ## Install
 
@@ -83,10 +98,22 @@ Everything the pipeline needs lives in the experiment folder:
 | `standard.csv` | `Compound, Area_Integral, concentration` — calibration points (µM) |
 | `*.D/` folders | Agilent injections (with `sample.xml` and `DAD*.ch`) |
 
-**Sample-name convention.** Sample names (read from each `sample.xml`) are
-expected as `"<time_h>, <strain>, <replicate>"`, e.g. `"24, s1, A"`. Injections
-that don't match (blanks, standards) are skipped with a warning. The pattern is
-a config field, so a different convention can be plugged in without code changes.
+For a **GC-MS** run, add a `gc:` block to the config and these files:
+
+| File | Purpose |
+|---|---|
+| `gc_compounds.csv` | `Compound, RT_low, RT_high, quantifier_mz [, qualifier_mz, ion_ratio_tol, Notes]` |
+| `gc_standard.csv` | `Compound, concentration, Area_Integral` — only when `gc.calibration.source: csv` |
+| GC `*.D/` folders | Agilent GC-MS injections (with `data.ms`); standards named e.g. `250uM_34DMS_hexane.D` |
+
+`qualifier_mz` encodes confirming ions and their expected ratios, e.g.
+`"149=0.40;91=0.36"`.
+
+**Sample-name convention.** HPLC sample names (read from each `sample.xml`) are
+expected as `"<time_h>, <strain>, <replicate>"`, e.g. `"24, s1, A"`; GC names use
+underscores, e.g. `"50_s11_A"`. Injections that don't match (blanks, standards)
+are skipped. Both patterns are config fields, so a different convention can be
+plugged in without code changes.
 
 ## Output interface
 
@@ -109,6 +136,14 @@ directory:
     replicate_summary.csv                   # mean ± SD, CV% per (strain × time × compound)
     time_series_<strain>.csv                # pivoted time course per strain
     analysis_plots.html                     # full Bokeh dashboard (area + µM)
+  gc_results/ , gc_analysis/                # same layout for the GC modality
+    gc_results/peak_results.csv             # one row per (injection × compound)
+    gc_results/gc_tic_overlay_interactive.html
+    gc_analysis/quantified_peaks.csv        # + Concentration_uM (dilution applied), ion-ratio flags
+    gc_analysis/analysis_plots.html
+  combined_analysis/                        # only when HPLC + GC both run
+    consolidated_peaks_combined.csv
+    analysis_plots.html                     # combined dashboard, compounds tagged by instrument
 ```
 
 ## How it works
@@ -134,6 +169,15 @@ directory:
 5. Compute replicate mean ± SD and CV%, flagging high-CV groups.
 6. Export CSVs and the Bokeh dashboard.
 
+**GC-MS path (`gc:` block).** Stage 1 reads each `.D` via rainbow, integrates the
+quantifier-ion EIC inside each compound's RT window (ALS baseline + trapezoid),
+and records the qualifier-ion ratios and a pass/fail confirmation. Stage 2 builds
+the calibration from the configured source (standard injections or CSV), applies
+it with the dilution factor (samples only), flags samples below the calibration
+range, then runs the same replicate statistics and dashboard. Because the GC peak
+table is already one row per (injection × compound), it skips HPLC's
+window-assignment and zero-fill steps.
+
 ## Configuration
 
 See `config/config.example.yaml` — every field is commented with what it
@@ -149,6 +193,10 @@ controls and its default. The most common knobs:
 | `plots.plot_strains` | Subset of strains to plot (`null` = all) |
 | `plots.strain_order` | Controls colour/order assignment |
 | `plots.bar_time_points` | Restrict bar charts to certain time points |
+| `gc.processing.quant_channel` | GC trace to integrate: `eic` / `tic` / `fid` |
+| `gc.calibration.source` | GC standards from `injections` or `csv` |
+| `gc.calibration.dilution_factor` | Multiply GC sample concentrations (e.g. `10` for 1:10) |
+| `gc.calibration.force_through_origin` | Fit `area = slope·conc` (no intercept floor) |
 
 ## Known fixes vs. the original scripts
 
@@ -204,6 +252,11 @@ HPLC_GC_pipeline/
 │   ├── stats.py              # replicate statistics
 │   ├── plotting_chromatograms.py  # Stage 1 plots
 │   ├── plotting_dashboard.py      # Stage 2 dashboard
+│   ├── gc_agilent.py         # GC-MS .D discovery + rainbow loading
+│   ├── gc_processing.py      # GC SIM integration + peak table (Stage 1)
+│   ├── gc_calibration.py     # GC calibration (selectable source) + dilution
+│   ├── gc_plotting.py        # GC EIC/TIC plots
+│   ├── gc_pipeline.py        # GC stage orchestration
 │   └── gui/                 # optional Streamlit web GUI (`hplc gui`)
 │       ├── app.py           # the Streamlit app
 │       ├── launch.py        # starts `streamlit run`

@@ -326,8 +326,11 @@ def plot_overlay_interactive_bokeh(dataset, output_dir: Path, palette: list[str]
     legend_header = Div(text="<b style='font-size:13px; font-family:Arial;'>Selected curves:</b>", width=300)
     hint = Div(text="<span style='font-size:11px; color:#888; font-family:Arial;'>Hover plot for RT &amp; intensity values.</span>", width=300)
 
-    side_panel = column(header, row(btn_show, btn_hide), checkbox, legend_header, legend_div, hint, width=320, sizing_mode="fixed")
-    layout = row(p, side_panel, sizing_mode="fixed")
+    # No sizing_mode="fixed" on the row/column: their children (the figure and
+    # the fixed-width panel) already carry sizes, and forcing "fixed" without
+    # explicit width/height triggers a harmless Bokeh W-1005 warning.
+    side_panel = column(header, row(btn_show, btn_hide), checkbox, legend_header, legend_div, hint, width=320)
+    layout = row(p, side_panel)
 
     html_path = Path(output_dir) / "chromatogram_overlay_interactive.html"
     bokeh.io.output_file(str(html_path))
