@@ -141,16 +141,25 @@ def build_from_injections(peak_df: pd.DataFrame, pattern: str,
     whose ``Sample`` matches ``pattern`` are treated as standards; their decoded
     concentration + integrated ``Area_Integral`` become calibration points.
     """
+    has_role = "Role" in peak_df.columns
     points: dict[str, list[tuple[float, float]]] = {}
     for _, row in peak_df.iterrows():
         parsed = parse_standard_name(row["Sample"], pattern)
         if parsed is None:
             continue
         std_compound, conc_uM = parsed
+        role = str(row["Role"]) if has_role else "sample"
+        if role == "calib_probe":
+            # Surrogate curve: this compound's quantifier ion integrated over the
+            # calibrant's peak. Use it only in the calibrant's own standards.
+            if str(row.get("Calibrant")) != std_compound:
+                continue
+            points.setdefault(str(row["Compound"]), []).append((conc_uM, float(row["Area_Integral"])))
+            continue
         # A standard injection is for one compound; only its own row contributes.
         if str(row["Compound"]) != std_compound:
             continue
-        points.setdefault(row["Compound"], []).append((conc_uM, float(row["Area_Integral"])))
+        points.setdefault(str(row["Compound"]), []).append((conc_uM, float(row["Area_Integral"])))
     return _finalise(points, force_origin)
 
 
@@ -229,6 +238,9 @@ def add_concentrations(peak_df: pd.DataFrame, calibration: dict[str, GCCalibrati
     df["Is_Standard"] = is_standard
 
     def measured(row) -> float:
+        # Each compound uses its own curve. For a surrogate (calibrate_as set)
+        # that curve was built from the calibrant's standards via probe rows, so
+        # it is already keyed by this compound's name.
         cal = calibration.get(row["Compound"])
         if cal is None:
             return np.nan

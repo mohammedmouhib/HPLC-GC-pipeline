@@ -82,7 +82,11 @@ def run_gc_analysis(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     peak_df = pd.read_csv(cfg.gc_peak_results_csv)
 
     # Calibration (selectable source) + concentrations (dilution applied to samples).
+    # Calibration reads the full table (surrogate curves come from calib_probe
+    # rows); quantification then drops those probe rows -- they are not real peaks.
     calibration = gc_calibration.build_calibration(peak_df, gc.calibration, cfg.experiment_dir)
+    if "Role" in peak_df.columns:
+        peak_df = peak_df[peak_df["Role"] != "calib_probe"].copy()
     quant_df = gc_calibration.add_concentrations(peak_df, calibration, gc.calibration)
 
     analysis_dir = cfg.gc_analysis_dir

@@ -191,3 +191,34 @@ def test_gc_force_through_origin_removes_floor():
     assert forced.predict(0.0) == 0.0
     # Free fit's non-zero intercept would predict a non-zero conc at area 0.
     assert free.predict(0.0, clamp_negative=False) != 0.0
+
+
+def test_calibrate_as_builds_surrogate_curve_from_shared_ion():
+    """A surrogate compound's curve comes from the calibrant's standards measured
+    through the surrogate's own quantifier ion (calib_probe rows), not the
+    calibrant's own quantifier curve."""
+    import pandas as pd
+    from hplc_gc_pipeline.gc_calibration import (
+        build_from_injections, add_concentrations, GCCalibrationConfig,
+    )
+    cfg = GCCalibrationConfig(force_through_origin=True)
+    peak_df = pd.DataFrame([
+        # STD's own curve on its quantifier ion: area = 60 * conc.
+        {"Sample": "50uM_STD_hexane",  "Compound": "STD", "Calibrant": "STD", "Role": "sample", "Area_Integral": 3000.0, "Ion_Ratio_Pass": True},
+        {"Sample": "100uM_STD_hexane", "Compound": "STD", "Calibrant": "STD", "Role": "sample", "Area_Integral": 6000.0, "Ion_Ratio_Pass": True},
+        # Probe rows: the STD standards seen through SUR's shared ion, area = 30 * conc.
+        {"Sample": "50uM_STD_hexane",  "Compound": "SUR", "Calibrant": "STD", "Role": "calib_probe", "Area_Integral": 1500.0, "Ion_Ratio_Pass": True},
+        {"Sample": "100uM_STD_hexane", "Compound": "SUR", "Calibrant": "STD", "Role": "calib_probe", "Area_Integral": 3000.0, "Ion_Ratio_Pass": True},
+        # A real sample with SUR (its own quantifier area).
+        {"Sample": "0, s1, A", "Compound": "SUR", "Calibrant": "STD", "Role": "sample", "Area_Integral": 1200.0, "Ion_Ratio_Pass": True},
+    ])
+    cal = build_from_injections(peak_df, cfg.standard_pattern, cfg.force_through_origin)
+    assert set(cal) == {"STD", "SUR"}
+    assert cal["STD"].slope == pytest.approx(60.0)
+    assert cal["SUR"].slope == pytest.approx(30.0)  # from the shared-ion probes
+    # Quantify the sample (probes excluded, as the pipeline does).
+    samples = peak_df[peak_df["Role"] != "calib_probe"].copy()
+    out = add_concentrations(samples, cal, cfg)
+    sur = out[out["Compound"] == "SUR"].iloc[0]
+    # 1200 area / 30 slope = 40 uM, on SUR's shared-ion curve.
+    assert sur["Concentration_uM_measured"] == pytest.approx(40.0)

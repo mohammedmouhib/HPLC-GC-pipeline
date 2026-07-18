@@ -73,6 +73,18 @@ class GCCompound:
     # (m/z, expected_ratio-or-None) for each qualifier ion.
     qualifiers: list[tuple[float, Optional[float]]] = field(default_factory=list)
     ion_ratio_tol: float = 0.30         # relative tolerance on qualifier ratios
+    # Name of the compound whose standards calibrate this one. None -> use this
+    # compound's own standards. When set, the curve is built from the calibrant's
+    # standards integrated on THIS compound's quantifier_mz over the calibrant's
+    # retention window -- valid when the two share that quantifier ion (a
+    # shared-fragment / response-factor assumption) and this compound has no
+    # dedicated standard of its own.
+    calibrate_as: Optional[str] = None
+
+    @property
+    def calibrant(self) -> str:
+        """Compound name whose curve quantifies this one (self by default)."""
+        return self.calibrate_as or self.name
 
 
 def _parse_qualifiers(raw) -> list[tuple[float, Optional[float]]]:
@@ -96,7 +108,8 @@ def load_gc_compounds(compounds_csv: Path) -> list[GCCompound]:
     """Load the GC compound table.
 
     Required columns: Compound, RT_low, RT_high, quantifier_mz.
-    Optional columns: qualifier_mz (e.g. "149=0.40;91=0.36"), ion_ratio_tol, Notes.
+    Optional columns: qualifier_mz (e.g. "149=0.40;91=0.36"), ion_ratio_tol,
+    calibrate_as (name of another compound whose curve quantifies this one), Notes.
     """
     compounds_csv = Path(compounds_csv)
     if not compounds_csv.exists():
@@ -117,6 +130,7 @@ def load_gc_compounds(compounds_csv: Path) -> list[GCCompound]:
     for _, r in df.iterrows():
         quals = _parse_qualifiers(r.get("qualifier_mz"))
         tol = float(r["ion_ratio_tol"]) if "ion_ratio_tol" in df.columns and pd.notna(r.get("ion_ratio_tol")) else 0.30
+        cal_as = str(r["calibrate_as"]).strip() if "calibrate_as" in df.columns and pd.notna(r.get("calibrate_as")) else ""
         c = GCCompound(
             name=str(r["Compound"]),
             rt_low=float(r["RT_low"]),
@@ -124,13 +138,15 @@ def load_gc_compounds(compounds_csv: Path) -> list[GCCompound]:
             quantifier_mz=float(r["quantifier_mz"]),
             qualifiers=quals,
             ion_ratio_tol=tol,
+            calibrate_as=cal_as or None,
         )
         compounds.append(c)
         qual_str = ", ".join(
             f"{int(m)}" + (f"={ratio:.2f}" if ratio is not None else "") for m, ratio in quals
         ) or "(none)"
+        cal_note = f" | calibrated as {c.calibrant}" if c.calibrate_as else ""
         print(f"  {c.name:<16} RT {c.rt_low:.2f}-{c.rt_high:.2f} min | "
-              f"quant m/z {int(c.quantifier_mz)} | qualifiers {qual_str}")
+              f"quant m/z {int(c.quantifier_mz)} | qualifiers {qual_str}{cal_note}")
     return compounds
 
 
@@ -272,6 +288,40 @@ def _qualifier_report(traces: GCTraces, compound: GCCompound,
 # Peak-table extraction
 # ---------------------------------------------------------------------------
 
+def _peak_row(inj: GCInjection, compound: GCCompound, cfg: GCProcessingConfig,
+              res: GCPeakResult, qual_str: str, qual_pass: Optional[bool],
+              role: str, rt_low: Optional[float] = None,
+              rt_high: Optional[float] = None) -> dict:
+    """Assemble one peak-table row.
+
+    ``role`` is ``"sample"`` for the normal quantifier integration or
+    ``"calib_probe"`` for a surrogate-calibration probe (this compound's
+    quantifier ion integrated over the calibrant's window; see
+    :func:`build_gc_peak_table`).
+    """
+    return {
+        "Experiment": inj.experiment_name,
+        "Folder": inj.folder_name,
+        "Sample": inj.sample_name,
+        "Peak_Number": 1,
+        "Compound": compound.name,
+        "Calibrant": compound.calibrant,
+        "Role": role,
+        "Channel": cfg.quant_channel,
+        "Quantifier_mz": compound.quantifier_mz,
+        "RT_Low": rt_low if rt_low is not None else compound.rt_low,
+        "RT_High": rt_high if rt_high is not None else compound.rt_high,
+        "Retention_Time_min": round(res.rt_min, 3) if res.rt_min is not None else None,
+        "Area_Integral": round(res.area, 2),
+        "Height": round(res.height, 2),
+        "Width_min": round(res.width_min, 4) if res.width_min is not None else None,
+        "Qualifier_Ratios": qual_str,
+        "Ion_Ratio_Pass": qual_pass,
+        "Detected": res.detected,
+        "Integration_Method": f"GC_{cfg.quant_channel.upper()}_Trapezoid",
+    }
+
+
 def build_gc_peak_table(injections: list[GCInjection], compounds: list[GCCompound],
                         cfg: GCProcessingConfig) -> pd.DataFrame:
     """Integrate every compound in every injection into a peak table.
@@ -284,6 +334,7 @@ def build_gc_peak_table(injections: list[GCInjection], compounds: list[GCCompoun
     print(f"INTEGRATING GC COMPOUNDS (channel: {cfg.quant_channel})")
     print("=" * 70)
 
+    by_name = {c.name: c for c in compounds}
     rows: list[dict] = []
     for i, inj in enumerate(injections, 1):
         try:
@@ -310,23 +361,25 @@ def build_gc_peak_table(injections: list[GCInjection], compounds: list[GCCompoun
                 res = GCPeakResult(False, None, 0.0, 0.0, None, None, None, 0.0)
                 qual_str, qual_pass = "", None
 
-            rows.append({
-                "Experiment": inj.experiment_name,
-                "Folder": inj.folder_name,
-                "Sample": inj.sample_name,
-                "Peak_Number": 1,
-                "Compound": compound.name,
-                "Channel": cfg.quant_channel,
-                "Quantifier_mz": compound.quantifier_mz,
-                "Retention_Time_min": round(res.rt_min, 3) if res.rt_min is not None else None,
-                "Area_Integral": round(res.area, 2),
-                "Height": round(res.height, 2),
-                "Width_min": round(res.width_min, 4) if res.width_min is not None else None,
-                "Qualifier_Ratios": qual_str,
-                "Ion_Ratio_Pass": qual_pass,
-                "Detected": res.detected,
-                "Integration_Method": f"GC_{cfg.quant_channel.upper()}_Trapezoid",
-            })
+            rows.append(_peak_row(inj, compound, cfg, res, qual_str, qual_pass, role="sample"))
+
+            # Surrogate calibration: when a compound borrows another's standards,
+            # also integrate THIS compound's quantifier ion over the CALIBRANT's
+            # retention window. In the calibrant's standard injections this
+            # captures the shared ion's response (e.g. 4MS's m/z 91 measured on
+            # the 34DMS standard peak), which builds this compound's curve.
+            cal_comp = by_name.get(compound.calibrate_as) if compound.calibrate_as else None
+            if cal_comp is not None:
+                try:
+                    praw = traces.eic_for(compound.quantifier_mz)
+                    pcorr = praw - als_baseline(praw, cfg.baseline.lam, cfg.baseline.p, cfg.baseline.niter)
+                    pres = integrate_peak(traces.time_min, pcorr, cal_comp.rt_low,
+                                          cal_comp.rt_high, cfg.peak_detection)
+                except Exception as exc:
+                    print(f"      {inj.sample_name} / {compound.name} calib-probe: {exc}")
+                    pres = GCPeakResult(False, None, 0.0, 0.0, None, None, None, 0.0)
+                rows.append(_peak_row(inj, compound, cfg, pres, "", None, role="calib_probe",
+                                      rt_low=cal_comp.rt_low, rt_high=cal_comp.rt_high))
         print(f"  [{i}/{len(injections)}] {inj.folder_name} '{inj.sample_name}' "
               f"-> {n_detected}/{len(compounds)} compounds detected")
 

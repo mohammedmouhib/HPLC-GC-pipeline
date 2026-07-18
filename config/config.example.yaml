@@ -116,10 +116,15 @@ gc:
   data_dir: "GC_data"
 
   # GC compound table. Like compounds.csv but with extra columns:
-  #   Compound, RT_low, RT_high, quantifier_mz [, qualifier_mz, ion_ratio_tol, Notes]
+  #   Compound, RT_low, RT_high, quantifier_mz [, qualifier_mz, ion_ratio_tol, calibrate_as, Notes]
   #   quantifier_mz : m/z of the ion integrated for quantification
   #   qualifier_mz  : confirming ions, e.g. "149=0.40;91=0.36" (=expected ratio)
   #   ion_ratio_tol : relative tolerance on those ratios (default 0.30)
+  #   calibrate_as  : name of another compound whose standards calibrate this one.
+  #                   The curve is built from that compound's standards integrated
+  #                   on THIS row's quantifier_mz -- valid when the two share that
+  #                   ion (e.g. 4MS on m/z 91 off the 34DMS standards). Use when a
+  #                   compound has no dedicated standard. Blank = own standards.
   compounds_file: "gc_compounds.csv"
 
   processing:

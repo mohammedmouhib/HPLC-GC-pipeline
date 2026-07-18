@@ -40,7 +40,7 @@ PKG_GC_COMPOUNDS = HERE / "gc_compounds_default.csv"
 COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "Notes"]
 STANDARD_COLS = ["Compound", "Area_Integral", "concentration"]
 GC_COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "quantifier_mz",
-                    "qualifier_mz", "ion_ratio_tol", "Notes"]
+                    "qualifier_mz", "ion_ratio_tol", "calibrate_as", "Notes"]
 GC_SAMPLE_PATTERN_DEFAULT = r"^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(?P<replicate>[A-Za-z])\s*$"
 GC_STANDARD_PATTERN_DEFAULT = r"^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)"
 
@@ -500,7 +500,9 @@ with tab_params:
                 st.caption("No GC compounds file in the folder yet — showing example values; apply to save.")
             st.markdown("**gc_compounds.csv** — RT windows + quantifier / qualifier m/z")
             st.caption('qualifier_mz e.g. "149=0.40;91=0.36" (=expected ratio); '
-                       "ion_ratio_tol = relative tolerance.")
+                       "ion_ratio_tol = relative tolerance; calibrate_as = another "
+                       "compound whose standards calibrate this row, integrated on "
+                       "this row's quantifier_mz (a shared-ion assumption).")
             gc_compounds_df = st.data_editor(st.session_state.gc_compounds_df, num_rows="dynamic",
                                              key="ed_gc_compounds", on_change=_mark_dirty)
         else:

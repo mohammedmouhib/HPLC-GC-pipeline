@@ -1,2 +1,2 @@
-Compound,RT_low,RT_high,quantifier_mz,qualifier_mz,ion_ratio_tol,Notes
-34DMS,12.2,12.75,164,149=0.40;91=0.36,0.30,3-4-dimethoxystyrene
+Compound,RT_low,RT_high,quantifier_mz,qualifier_mz,ion_ratio_tol,calibrate_as,Notes
+34DMS,12.2,12.75,164,149=0.40;91=0.36,0.30,,3-4-dimethoxystyrene
