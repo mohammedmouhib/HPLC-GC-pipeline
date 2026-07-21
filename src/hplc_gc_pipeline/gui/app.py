@@ -144,6 +144,21 @@ def _dimension_options(exp: Path, analysis_dir: str, col: str):
     return sorted(vals) if vals else None
 
 
+def _pick_folder() -> str | None:
+    """Open a native OS folder-picker dialog; return the selected path or None."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes("-topmost", 1)
+        folder = filedialog.askdirectory(title="Select experiment folder")
+        root.destroy()
+        return folder or None
+    except Exception:
+        return None
+
+
 def _has_any_results(exp: Path) -> bool:
     candidates = [
         exp / "gc_analysis" / "analysis_plots.html",
@@ -347,13 +362,24 @@ st.set_page_config(page_title="HPLC / GC-MS pipeline", page_icon=":material/scie
 # --------------------------------------------------------------------------
 with st.sidebar:
     st.header("Experiment folder")
+
+    # Browse button — opens native OS folder picker
+    if st.button("Browse for folder", icon=":material/folder_open:", width="stretch"):
+        picked = _pick_folder()
+        if picked and Path(picked).is_dir():
+            st.session_state.exp_path_input = picked
+            load_into_state(Path(picked))
+            st.rerun()
+
     exp_str = st.text_input(
-        "Experiment folder path", value=st.session_state.get("loaded_exp", initial_exp_dir()),
+        "Experiment folder path",
+        key="exp_path_input",
+        value=st.session_state.get("loaded_exp", initial_exp_dir()),
         label_visibility="collapsed",
-        placeholder="/path/to/your/experiment",
+        placeholder="or paste a path here…",
         help="Folder containing your Agilent .D injection files (or subfolders of them).",
     )
-    if st.button("Load / reload", type="primary", width="stretch", icon=":material/refresh:"):
+    if st.button("Load", type="primary", width="stretch", icon=":material/refresh:"):
         if exp_str and Path(exp_str).is_dir():
             load_into_state(Path(exp_str))
             st.success("Loaded.")
@@ -418,7 +444,7 @@ if "doc" not in st.session_state:
         with st.container(border=True):
             st.markdown(":material/folder_open: **Step 1 — Load**")
             st.caption(
-                "Enter your experiment folder path in the sidebar and click **Load / Reload**. "
+                "Click **Browse for folder** in the sidebar to pick your experiment folder. "
                 "The folder should contain Agilent `.D` injection subfolders."
             )
     with col2:
