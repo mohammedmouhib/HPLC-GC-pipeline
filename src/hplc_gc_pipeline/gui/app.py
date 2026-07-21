@@ -90,7 +90,7 @@ with st.sidebar:
             st.info("Go to **Run → Run both** to process your data.",
                     icon=":material/arrow_forward:")
         else:
-            st.caption(":material/check_circle: Ready — open **Results**.")
+            st.caption(":material/check_circle: Ready — see Results in the sidebar.")
 
 # --------------------------------------------------------------------------
 # Auto-load when a path was pre-supplied on the command line, or re-init
@@ -150,14 +150,41 @@ def _welcome() -> None:
 if "doc" not in st.session_state:
     pages = [st.Page(_welcome, title="Get started", icon=":material/home:", default=True)]
 else:
-    pages = [
+    exp = Path(st.session_state.loaded_exp)
+    analysis_dir = st.session_state.get("w_analysis_dir", "analysis")
+    results_dir  = st.session_state.get("w_results_dir",  "results")
+
+    result_pages = []
+    if any((exp / "gc_analysis" / f).exists() or (exp / "gc_results" / f).exists()
+           for f in ("analysis_plots.html",
+                     "gc_tic_overlay_interactive.html",
+                     "chromatogram_gallery.html")):
+        result_pages.append(
+            st.Page("app_pages/results_gc.py", title="GC-MS",
+                    icon=":material/biotech:")
+        )
+    if any(p.exists() for p in (
+        exp / analysis_dir / "analysis_plots.html",
+        exp / results_dir  / "chromatogram_overlay_interactive.html",
+        exp / results_dir  / "chromatogram_gallery.html",
+    )):
+        result_pages.append(
+            st.Page("app_pages/results_hplc.py", title="HPLC",
+                    icon=":material/water_drop:")
+        )
+    if (exp / "combined_analysis" / "analysis_plots.html").exists():
+        result_pages.append(
+            st.Page("app_pages/results_combined.py", title="Combined",
+                    icon=":material/merge:")
+        )
+
+    core_pages = [
         st.Page("app_pages/parameters.py", title="Parameters",
                 icon=":material/tune:", default=True),
         st.Page("app_pages/run.py", title="Run",
                 icon=":material/play_arrow:"),
-        st.Page("app_pages/results.py", title="Results",
-                icon=":material/analytics:"),
     ]
+    pages = {"": core_pages, "Results": result_pages} if result_pages else core_pages
 
 pg = st.navigation(pages)
 pg.run()

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import http.server
+import os
+import posixpath
 import subprocess
 import sys
+import threading
+import urllib.parse
 import webbrowser
 from datetime import datetime
 from io import StringIO
@@ -33,6 +38,53 @@ GC_SAMPLE_PATTERN_DEFAULT = r"^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(
 GC_STANDARD_PATTERN_DEFAULT = r"^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)"
 
 NOISE = ("Sparse", "spsolve", "flatfit", "UserWarning", "RuntimeWarning")
+
+
+# --------------------------------------------------------------------------
+# Local static-file server (serves experiment directory for HTML previews)
+# --------------------------------------------------------------------------
+class _RootedHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves files from a dynamically-updated root (the experiment folder)."""
+    root: str = ""
+
+    def translate_path(self, path: str) -> str:
+        path = path.split("?", 1)[0].split("#", 1)[0]
+        path = urllib.parse.unquote(path, errors="surrogatepass")
+        path = posixpath.normpath(path)
+        parts = [p for p in path.split("/") if p and p not in (".", "..")]
+        return os.path.join(self.root or os.getcwd(), *parts)
+
+    def log_message(self, *args) -> None:
+        pass  # suppress per-request logs
+
+
+_fs: dict = {"httpd": None, "port": 0}
+
+
+def _ensure_file_server(root: str) -> int:
+    """Start the daemon file server once; update its root on each call.
+
+    Returns the bound port, or 0 if startup failed.
+    """
+    _RootedHandler.root = root
+    if _fs["httpd"] is not None:
+        return _fs["port"]
+
+    from http.server import ThreadingHTTPServer
+    for candidate in (8502, 0):   # prefer fixed port, fall back to OS-assigned
+        try:
+            httpd = ThreadingHTTPServer(("127.0.0.1", candidate), _RootedHandler)
+            break
+        except OSError:
+            continue
+    else:
+        return 0
+
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    _fs["httpd"] = httpd
+    _fs["port"] = port
+    return port
 
 
 # --------------------------------------------------------------------------
@@ -223,6 +275,7 @@ def load_into_state(exp: Path) -> None:
         st.session_state.pop(k, None)
     st.session_state.loaded_exp = str(exp)
     st.session_state.dirty = False
+    _ensure_file_server(str(exp))
 
 
 def apply_changes(
@@ -326,15 +379,32 @@ def run_stage(exp: Path, subcommand: str, extra_args: list[str] | None = None) -
 # --------------------------------------------------------------------------
 # Result helpers
 # --------------------------------------------------------------------------
-def embed_html(path: Path, height: int = 820) -> None:
+def embed_html(path: Path, height: int = 900, scrolling: bool = False) -> None:
+    """Embed an HTML result file. Uses the local file server when available
+    (proper Bokeh sizing); falls back to inline injection."""
+    port = _fs.get("port", 0)
+    if port:
+        try:
+            exp = Path(st.session_state.loaded_exp)
+            rel = path.relative_to(exp).as_posix()
+            components.iframe(
+                src=f"http://127.0.0.1:{port}/{rel}",
+                height=height,
+                scrolling=scrolling,
+            )
+            return
+        except (ValueError, KeyError):
+            pass
     components.html(path.read_text(encoding="utf-8"), height=height, scrolling=True)
 
 
-def output_row(label: str, path: Path) -> None:
-    st.markdown(f"**{label}**")
-    st.caption(f"{path} · {_file_meta(path)}")
+def result_header(path: Path) -> None:
+    """Open-in-browser + download buttons with file metadata."""
+    st.caption(f"`{path.name}` · {_file_meta(path)}")
     with st.container(horizontal=True):
-        if st.button("Open", icon=":material/open_in_new:", key=f"open_{label}"):
+        if st.button("Open in browser", icon=":material/open_in_new:",
+                     key=f"open_{path.name}"):
             webbrowser.open(path.resolve().as_uri())
         st.download_button("Download", data=path.read_bytes(), file_name=path.name,
-                           mime="text/html", icon=":material/download:", key=f"dl_{label}")
+                           mime="text/html", icon=":material/download:",
+                           key=f"dl_{path.name}")
