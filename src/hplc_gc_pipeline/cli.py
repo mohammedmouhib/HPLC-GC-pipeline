@@ -51,11 +51,69 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--debug", action="store_true",
                         help="Show the full traceback on error")
 
+    ip = sub.add_parser(
+        "init",
+        help="Auto-discover a GC-MS experiment folder and write starter config files",
+    )
+    ip.add_argument("experiment_dir", type=Path, help="Path to the experiment folder")
+    ip.add_argument(
+        "--rt-min", type=float, default=1.5, metavar="MIN",
+        help="Start of RT scan window in minutes (default: 1.5; skips solvent front)",
+    )
+    ip.add_argument(
+        "--rt-max", type=float, default=30.0, metavar="MAX",
+        help="End of RT scan window in minutes (default: 30.0)",
+    )
+    ip.add_argument(
+        "--rt-margin", type=float, default=0.08, metavar="MIN",
+        help="Margin added to each side of a detected peak RT window (default: 0.08 min)",
+    )
+    ip.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing hplc_config.yaml / gc_compounds.csv without prompting",
+    )
+    ip.add_argument("--debug", action="store_true", help="Show full traceback on error")
+
     gp = sub.add_parser("gui", help="Launch the web GUI (needs the 'gui' extra)")
     gp.add_argument("experiment_dir", type=Path, nargs="?", default=None,
                     help="Experiment folder to preload (optional; can be set in the GUI)")
     gp.add_argument("--port", type=int, default=8501, help="Local port (default 8501)")
     return parser
+
+
+def _run_init(args) -> None:
+    """Handle the `hplc init` subcommand."""
+    from .gc_init import run_gc_init, write_gc_compounds, write_hplc_config, print_summary
+    from .gc_calibration import GCCalibrationConfig
+
+    exp_dir = Path(args.experiment_dir).expanduser().resolve()
+    if not exp_dir.is_dir():
+        raise NotADirectoryError(f"Experiment directory not found: {exp_dir}")
+
+    config_path = exp_dir / "hplc_config.yaml"
+    compounds_path = exp_dir / "gc_compounds.csv"
+
+    existing = [p for p in (config_path, compounds_path) if p.exists()]
+    if existing and not args.force:
+        names = " and ".join(p.name for p in existing)
+        raise FileExistsError(
+            f"{names} already exist in {exp_dir}. "
+            f"Use --force to overwrite."
+        )
+
+    std_pattern = GCCalibrationConfig.standard_pattern
+
+    result = run_gc_init(
+        exp_dir,
+        std_pattern=std_pattern,
+        rt_scan_min=args.rt_min,
+        rt_scan_max=args.rt_max,
+        rt_margin=args.rt_margin,
+    )
+
+    write_gc_compounds(result, compounds_path)
+    write_hplc_config(result, config_path, std_pattern)
+    print_summary(result, config_path, compounds_path)
 
 
 def _apply_modality_filter(cfg, modality) -> None:
@@ -78,6 +136,9 @@ def main(argv=None) -> int:
         return launch_gui(args.experiment_dir, port=args.port)
 
     try:
+        if args.command == "init":
+            _run_init(args)
+            return 0
         cfg = load_config(args.experiment_dir, args.config)
         _apply_modality_filter(cfg, args.modality)
         if args.command == "process":

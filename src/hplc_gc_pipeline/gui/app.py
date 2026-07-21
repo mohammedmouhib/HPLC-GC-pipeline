@@ -290,8 +290,8 @@ def apply_changes(exp: Path, compounds_df, standard_df, gc_compounds_df,
 NOISE = ("Sparse", "spsolve", "flatfit", "UserWarning", "RuntimeWarning")
 
 
-def run_stage(exp: Path, subcommand: str) -> int:
-    cmd = [sys.executable, "-m", "hplc_gc_pipeline.cli", subcommand, str(exp)]
+def run_stage(exp: Path, subcommand: str, extra_args: list[str] | None = None) -> int:
+    cmd = [sys.executable, "-m", "hplc_gc_pipeline.cli", subcommand, str(exp)] + (extra_args or [])
     box = st.empty()
     lines: list[str] = []
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -519,6 +519,57 @@ with tab_params:
 # ==========================================================================
 with tab_run:
     st.caption(f"Experiment folder: `{exp}`")
+
+    # ── Init ──────────────────────────────────────────────────────────────────
+    config_path = exp / "hplc_config.yaml"
+    gc_compounds_path = exp / st.session_state.get("w_gc_compounds_file", "gc_compounds.csv")
+    with st.container(border=True):
+        st.subheader("Initialize — auto-detect from GC-MS data")
+        st.caption(
+            "Scans the folder for GC-MS `.D` injections, identifies standards by name, "
+            "detects peak RT windows and quantifier ions, and writes draft "
+            "`hplc_config.yaml` + `gc_compounds.csv`. "
+            "Review the **Parameters** tab afterwards to rename compounds, set "
+            "`calibrate_as`, and adjust the dilution factor."
+        )
+        with st.expander("Init options"):
+            ic1, ic2, ic3 = st.columns(3)
+            init_rt_min = ic1.number_input(
+                "RT scan start (min)", value=1.5, min_value=0.0, step=0.5,
+                help="Ignore peaks before this time (skips solvent front).",
+            )
+            init_rt_max = ic2.number_input(
+                "RT scan end (min)", value=30.0, min_value=1.0, step=5.0,
+            )
+            init_rt_margin = ic3.number_input(
+                "RT window margin (min)", value=0.08, min_value=0.0, step=0.01, format="%.2f",
+                help="Added to each side of the detected peak edge.",
+            )
+        files_exist = config_path.exists() or gc_compounds_path.exists()
+        if files_exist:
+            st.warning(
+                "Config or compounds file already exists and will be **overwritten**. "
+                "The previous files are not backed up."
+            )
+        if st.button("Initialize (auto-detect)", icon=":material/auto_awesome:",
+                     type="secondary"):
+            extra = [
+                "--force",
+                "--rt-min", str(init_rt_min),
+                "--rt-max", str(init_rt_max),
+                "--rt-margin", str(init_rt_margin),
+            ]
+            with st.spinner("Running `hplc init` …"):
+                code = run_stage(exp, "init", extra_args=extra)
+            if code == 0:
+                st.success("Init complete — config files written. Reloading parameters…")
+                load_into_state(exp)
+                st.rerun()
+            else:
+                st.error(f"`hplc init` failed (exit {code}). See log above.")
+
+    st.divider()
+    # ── Pipeline stages ───────────────────────────────────────────────────────
     if st.session_state.get("dirty"):
         st.warning("Unsaved parameter edits — go to **Parameters** and click **Apply changes** first.")
     with st.container(horizontal=True):
