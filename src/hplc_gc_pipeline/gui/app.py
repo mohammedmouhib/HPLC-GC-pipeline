@@ -144,6 +144,15 @@ def _dimension_options(exp: Path, analysis_dir: str, col: str):
     return sorted(vals) if vals else None
 
 
+def _has_any_results(exp: Path) -> bool:
+    candidates = [
+        exp / "gc_analysis" / "analysis_plots.html",
+        exp / "analysis" / "analysis_plots.html",
+        exp / "combined_analysis" / "analysis_plots.html",
+    ]
+    return any(p.exists() for p in candidates)
+
+
 # --------------------------------------------------------------------------
 # State
 # --------------------------------------------------------------------------
@@ -329,80 +338,275 @@ def output_row(label: str, path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# UI
+# Page config
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="HPLC pipeline", page_icon=":material/science:", layout="wide")
-st.title("HPLC pipeline")
+st.set_page_config(page_title="HPLC / GC-MS pipeline", page_icon=":material/science:", layout="wide")
 
+# --------------------------------------------------------------------------
+# Sidebar
+# --------------------------------------------------------------------------
 with st.sidebar:
     st.header("Experiment folder")
     exp_str = st.text_input(
         "Experiment folder path", value=st.session_state.get("loaded_exp", initial_exp_dir()),
         label_visibility="collapsed",
-        help="Folder holding your .D data (or a Data/ subfolder) plus the config and CSVs.",
+        placeholder="/path/to/your/experiment",
+        help="Folder containing your Agilent .D injection files (or subfolders of them).",
     )
     if st.button("Load / reload", type="primary", width="stretch", icon=":material/refresh:"):
         if exp_str and Path(exp_str).is_dir():
             load_into_state(Path(exp_str))
             st.success("Loaded.")
         else:
-            st.error("Not a directory.")
+            st.error("Not a valid directory.")
 
+    # Status panel — only shown once a folder is loaded
+    if "doc" in st.session_state:
+        st.divider()
+        _exp = Path(st.session_state.loaded_exp)
+        _s = st.session_state
+        _config_ok = (_exp / "hplc_config.yaml").exists()
+        _data_root = _exp / _s.get("w_datadir") if _s.get("w_datadir") else _exp
+        _n = _count_d_folders(_data_root)
+        _results_ok = _has_any_results(_exp)
+
+        st.caption("**Status**")
+        st.badge(
+            "Config ready" if _config_ok else "No config yet",
+            icon=":material/check:" if _config_ok else ":material/warning:",
+            color="green" if _config_ok else "orange",
+        )
+        st.badge(
+            f"{_n} injections found" if _n else "No .D files found",
+            icon=":material/science:",
+            color="green" if _n else "red",
+        )
+        if _results_ok:
+            st.badge("Results ready", icon=":material/analytics:", color="blue")
+
+        if _s.get("dirty"):
+            st.warning("Unsaved edits — apply in Parameters.", icon=":material/edit:")
+
+        # Contextual next-step hint
+        st.space("small")
+        if not _config_ok:
+            st.info("Go to **Run** → **Initialize** to generate a starter config.", icon=":material/arrow_forward:")
+        elif not _results_ok:
+            st.info("Go to **Run** → **Run both** to process your data.", icon=":material/arrow_forward:")
+        else:
+            st.caption(":material/check_circle: Ready — open the **Results** tab.")
+
+# --------------------------------------------------------------------------
+# Welcome screen (no folder loaded yet)
+# --------------------------------------------------------------------------
 if "doc" not in st.session_state and exp_str and Path(exp_str).is_dir():
     load_into_state(Path(exp_str))
 
 if "doc" not in st.session_state:
-    st.info("Enter an experiment folder in the sidebar and click **Load / Reload**.")
+    st.space("large")
+    with st.container(horizontal_alignment="center"):
+        st.markdown(":material/science:")
+        st.title("HPLC / GC-MS pipeline", text_alignment="center")
+        st.caption(
+            "Process raw Agilent .D injections → calibrated concentrations → interactive plots",
+            text_alignment="center",
+        )
+
+    st.space("large")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        with st.container(border=True):
+            st.markdown(":material/folder_open: **Step 1 — Load**")
+            st.caption(
+                "Enter your experiment folder path in the sidebar and click **Load / Reload**. "
+                "The folder should contain Agilent `.D` injection subfolders."
+            )
+    with col2:
+        with st.container(border=True):
+            st.markdown(":material/auto_awesome: **Step 2 — Initialize** *(new experiments)*")
+            st.caption(
+                "Open the **Run** tab and click **Initialize**. "
+                "The pipeline scans your `.D` files, detects peaks and m/z values, "
+                "and writes a starter config automatically."
+            )
+    with col3:
+        with st.container(border=True):
+            st.markdown(":material/play_arrow: **Step 3 — Run & explore**")
+            st.caption(
+                "Click **Run both** to process all injections and build calibration curves. "
+                "Results appear in the **Results** tab as interactive Bokeh dashboards."
+            )
+
+    st.space("large")
+    st.caption(
+        "Already have a configured experiment? Just enter the folder path above — "
+        "the pipeline will pick up any existing config automatically.",
+        text_alignment="center",
+    )
     st.stop()
 
 exp = Path(st.session_state.loaded_exp)
 analysis_dir = st.session_state.get("w_analysis_dir", "analysis")
 results_dir = st.session_state.get("w_results_dir", "results")
 
-with st.sidebar:
-    st.divider()
-    st.subheader("Status")
-    data_root = exp / st.session_state.w_datadir if st.session_state.w_datadir else exp
-    for fname in (st.session_state.w_compounds_file, st.session_state.w_standard_file, "hplc_config.yaml"):
-        mark = ":material/check_circle:" if (exp / fname).exists() else ":material/radio_button_unchecked:"
-        st.write(f"{mark} {fname}")
-    st.write(f":material/science: `.D` injections found: **{_count_d_folders(data_root)}**")
-    if st.session_state.get("dirty"):
-        st.warning("Unsaved edits — click **Apply changes**.")
-
+# --------------------------------------------------------------------------
+# Tabs
+# --------------------------------------------------------------------------
 tab_params, tab_run, tab_results = st.tabs(
-    ["Parameters", "Run", "Results"], on_change="rerun"
+    [":material/tune: Parameters", ":material/play_arrow: Run", ":material/analytics: Results"],
 )
 
 # ==========================================================================
 # PARAMETERS
 # ==========================================================================
 with tab_params:
-    with st.container(border=True):
-        st.subheader("Processing · Stage 1")
-        c1, c2, c3 = st.columns(3)
-        c1.number_input("Wavelength (nm)", key="w_wavelength", step=1, on_change=_mark_dirty)
-        c2.text_input("Blank .D folder", key="w_blank",
-                      placeholder="e.g. 091-0202.D (blank = none)", on_change=_mark_dirty)
-        c3.text_input("Data subfolder", key="w_datadir",
-                      placeholder="e.g. Data (blank = root)", on_change=_mark_dirty)
-        c4, c5, c6 = st.columns(3)
-        c4.checkbox("Deconvolution enabled", key="w_deconv", on_change=_mark_dirty)
-        c5.number_input("Min R² to accept fit", key="w_minr2", step=0.01, format="%.2f", on_change=_mark_dirty)
-        c6.number_input("Max components / peak", key="w_maxcomps", step=1, on_change=_mark_dirty)
 
+    # ── GC-MS modality ────────────────────────────────────────────────────
     with st.container(border=True):
-        st.subheader("Analysis · Stage 2")
-        a1, a2, a3, a4 = st.columns(4)
-        a1.checkbox("Exclude peaks outside RT windows", key="w_excl", on_change=_mark_dirty)
-        a2.number_input("CV%% warning threshold", key="w_cv", step=1.0, on_change=_mark_dirty)
-        a3.checkbox("Clamp negative conc. to 0", key="w_clamp", on_change=_mark_dirty)
-        a4.checkbox("Zero area → 0 µM (fix)", key="w_zero", on_change=_mark_dirty)
-        st.text_input("Sample-name regex", key="w_pattern", on_change=_mark_dirty,
-                      help='Named groups: time, strain, replicate. Default: "24, s1, A".')
+        gc_hdr, gc_badge = st.columns([5, 1], vertical_alignment="center")
+        with gc_hdr:
+            st.subheader("GC-MS modality")
+        with gc_badge:
+            if st.session_state.w_gc_enabled:
+                st.badge("Enabled", color="green")
+            else:
+                st.badge("Disabled", color="gray")
 
-    with st.container(border=True):
-        st.subheader("Plots · samples to include")
+        st.toggle(
+            "Enable GC-MS processing",
+            key="w_gc_enabled",
+            on_change=_mark_dirty,
+            help="Adds a `gc:` block to hplc_config.yaml. Enable when your experiment includes GC-MS .D injections.",
+        )
+        gc_compounds_df = st.session_state.gc_compounds_df
+
+        if st.session_state.w_gc_enabled:
+            g1, g2, g3 = st.columns(3)
+            g1.text_input(
+                "GC data subfolder", key="w_gc_datadir",
+                placeholder="blank = experiment root",
+                on_change=_mark_dirty,
+                help="Subfolder holding GC .D files. Leave blank to scan the experiment folder directly.",
+            )
+            g2.segmented_control(
+                "Quantification channel", ["eic", "tic", "fid"],
+                key="w_gc_quant_channel", on_change=_mark_dirty,
+                help="eic = quantifier-ion extracted chromatogram (most selective, recommended). "
+                     "tic = total ion current. fid = flame-ionisation detector.",
+            )
+            g3.number_input(
+                "Sample dilution factor", key="w_gc_dilution",
+                min_value=0.0, step=1.0, on_change=_mark_dirty,
+                help="Multiply sample concentrations by this to recover the undiluted value. "
+                     "1:10 dilution → 10. Standards are never scaled.",
+            )
+            c1, c2 = st.columns(2)
+            c1.segmented_control(
+                "Calibration source", ["injections", "csv"],
+                key="w_gc_cal_source", on_change=_mark_dirty,
+                help="injections = build the curve from standard .D folders; "
+                     "csv = read a gc_standard.csv you supply.",
+            )
+            c2.toggle(
+                "Force fit through origin",
+                key="w_gc_force_origin", on_change=_mark_dirty,
+                help="Fit area = slope · conc (no intercept). Recommended for trace GC-MS; "
+                     "avoids a non-zero concentration at zero area.",
+            )
+
+            with st.expander("Advanced GC settings", icon=":material/settings:"):
+                st.text_input(
+                    "Sample-name pattern", key="w_gc_pattern", on_change=_mark_dirty,
+                    help='Regex with named groups: time, strain, replicate. '
+                         'Default matches "50_s11_A" (underscore) or '
+                         '"24, s11, A" (comma, as auto-detected by init).',
+                )
+                st.text_input(
+                    "Standard-name pattern", key="w_gc_std_pattern", on_change=_mark_dirty,
+                    help="Groups: conc, unit, compound. Matches names like '250uM_34DMS_hexane'.",
+                )
+                e1, e2 = st.columns(2)
+                e1.text_input("GC compounds file", key="w_gc_compounds_file", on_change=_mark_dirty)
+                e2.text_input("GC standard CSV (source = csv)", key="w_gc_std_file", on_change=_mark_dirty)
+                x1, x2, x3 = st.columns(3)
+                x1.toggle("Clamp negative conc. to 0", key="w_gc_clamp", on_change=_mark_dirty)
+                x2.toggle("Require ion-ratio confirmation", key="w_gc_require_ratio", on_change=_mark_dirty,
+                           help="Report qualifier-ratio failures as 0 µM instead of the fitted value.")
+                x3.number_input("CV% warning threshold", key="w_gc_cv", step=1.0, on_change=_mark_dirty)
+
+            if st.session_state.get("gc_compounds_seeded"):
+                st.caption("No gc_compounds.csv in this folder yet — showing example values. Run **Initialize** or edit below and click **Apply**.")
+            st.markdown("**gc_compounds.csv** — RT windows + quantifier / qualifier m/z")
+            st.caption(
+                'qualifier_mz format: `"149=0.40;91=0.36"` (m/z=expected_ratio). '
+                "ion_ratio_tol = relative tolerance on those ratios. "
+                "calibrate_as = another compound whose standards are used to calibrate this row "
+                "(valid when the two share the quantifier ion)."
+            )
+            gc_compounds_df = st.data_editor(
+                st.session_state.gc_compounds_df, num_rows="dynamic",
+                key="ed_gc_compounds", on_change=_mark_dirty,
+            )
+        else:
+            st.caption(
+                "Enable to process GC-MS `.D` data alongside (or instead of) HPLC data. "
+                "When both modalities are active, a combined dashboard is written to `combined_analysis/`."
+            )
+
+    # ── HPLC modality ─────────────────────────────────────────────────────
+    with st.expander(
+        "HPLC settings" + (" — not active" if st.session_state.w_gc_enabled and not any(
+            k in st.session_state.get("doc", {}) for k in ("processing", "analysis", "hplc")
+        ) else ""),
+        icon=":material/water_drop:",
+        expanded=not st.session_state.w_gc_enabled,
+    ):
+        st.caption("Configure these when your experiment includes HPLC / DAD data.")
+        with st.container(border=True):
+            st.subheader("Processing · Stage 1")
+            c1, c2, c3 = st.columns(3)
+            c1.number_input("Detection wavelength (nm)", key="w_wavelength", step=1, on_change=_mark_dirty)
+            c2.text_input(
+                "Blank injection (.D folder name)", key="w_blank",
+                placeholder="e.g. 091-0202.D (blank = none)", on_change=_mark_dirty,
+            )
+            c3.text_input(
+                "Data subfolder", key="w_datadir",
+                placeholder="e.g. Data (blank = experiment root)", on_change=_mark_dirty,
+            )
+            c4, c5, c6 = st.columns(3)
+            c4.toggle("Peak deconvolution", key="w_deconv", on_change=_mark_dirty,
+                      help="If disabled, peaks are integrated by trapezoid fallback only.")
+            c5.number_input("Min R² to accept fit", key="w_minr2", step=0.01, format="%.2f", on_change=_mark_dirty)
+            c6.number_input("Max components per peak", key="w_maxcomps", step=1, on_change=_mark_dirty)
+
+        with st.container(border=True):
+            st.subheader("Analysis · Stage 2")
+            a1, a2, a3, a4 = st.columns(4)
+            a1.toggle("Exclude peaks outside RT windows", key="w_excl", on_change=_mark_dirty)
+            a2.number_input("CV% warning threshold", key="w_cv", step=1.0, on_change=_mark_dirty)
+            a3.toggle("Clamp negative conc. to 0", key="w_clamp", on_change=_mark_dirty)
+            a4.toggle("Zero area → 0 µM", key="w_zero", on_change=_mark_dirty,
+                      help="Report zero-area compounds as 0 µM rather than the calibration intercept.")
+            st.text_input(
+                "Sample-name pattern", key="w_pattern", on_change=_mark_dirty,
+                help='Named groups: time, strain, replicate. Default matches "24, s1, A".',
+            )
+
+        with st.container(border=True):
+            st.subheader("compounds.csv — retention-time windows")
+            if st.session_state.get("compounds_seeded"):
+                st.caption("No compounds file yet — showing example values; apply to save.")
+            compounds_df = st.data_editor(st.session_state.compounds_df, num_rows="dynamic",
+                                          key="ed_compounds", on_change=_mark_dirty)
+            st.subheader("standard.csv — calibration points")
+            if st.session_state.get("standard_seeded"):
+                st.caption("No standard file yet — showing example values; apply to save.")
+            standard_df = st.data_editor(st.session_state.standard_df, num_rows="dynamic",
+                                         key="ed_standard", on_change=_mark_dirty)
+
+    # ── Plots ──────────────────────────────────────────────────────────────
+    with st.expander("Plot options", icon=":material/bar_chart:"):
         strain_opts = _dimension_options(exp, analysis_dir, "Strain")
         time_opts = _dimension_options(exp, analysis_dir, "Time_Point_h")
         pc1, pc2 = st.columns(2)
@@ -412,27 +616,32 @@ with tab_params:
                 plot_strains = st.multiselect("Strains to plot (empty = all)", strain_opts,
                                               default=default, key="w_strains_ms", on_change=_mark_dirty)
             else:
-                plot_strains = _csv_list(st.text_input("Strains to plot", key="w_strains_txt",
-                                          placeholder="all (comma-separated)", on_change=_mark_dirty,
-                                          help="Run Stage 2 once to get a checklist of detected strains."))
+                plot_strains = _csv_list(st.text_input(
+                    "Strains to plot", key="w_strains_txt",
+                    placeholder="all (comma-separated)", on_change=_mark_dirty,
+                    help="Run Stage 2 once to get a checklist of detected strains.",
+                ))
         with pc2:
             if time_opts:
                 t_default = [int(x) for x in _csv_list(st.session_state.w_bartp_txt) or [] if str(x).isdigit()]
                 t_default = [x for x in t_default if x in [int(o) for o in time_opts]]
-                bar_time_points = st.multiselect("Bar-chart time points (empty = all)",
-                                                 [int(o) for o in time_opts], default=t_default,
-                                                 key="w_bartp_ms", on_change=_mark_dirty)
+                bar_time_points = st.multiselect(
+                    "Bar-chart time points (empty = all)",
+                    [int(o) for o in time_opts], default=t_default,
+                    key="w_bartp_ms", on_change=_mark_dirty,
+                )
             else:
                 txt = st.text_input("Bar-chart time points", key="w_bartp_txt",
                                     placeholder="all (e.g. 0, 24, 50)", on_change=_mark_dirty)
                 bar_time_points = [int(x) for x in (_csv_list(txt) or []) if str(x).strip().isdigit()] or None
         pc3, pc4 = st.columns(2)
         pc3.number_input("Grid columns", key="w_ncols", step=1, min_value=1, on_change=_mark_dirty)
-        pc4.text_input("Strain order (colour order)", key="w_order",
-                       placeholder="alphabetical", on_change=_mark_dirty)
+        pc4.text_input("Strain colour order", key="w_order",
+                       placeholder="alphabetical", on_change=_mark_dirty,
+                       help="Comma-separated list controls which strain gets which colour.")
 
-    with st.expander("Advanced — peak detection, models, palette, file names & output folders"):
-        st.caption("Leave a peak-detection field blank to use MOCCA2's own default.")
+    with st.expander("Advanced — peak detection, deconvolution models, palette, file names", icon=":material/build:"):
+        st.caption("Leave peak-detection fields blank to use MOCCA2's own defaults.")
         d1, d2, d3, d4 = st.columns(4)
         d1.text_input("min_height", key="w_min_height", on_change=_mark_dirty)
         d2.text_input("min_prominence", key="w_min_prom", on_change=_mark_dirty)
@@ -441,74 +650,14 @@ with tab_params:
         st.text_input("Deconvolution models (in order)", key="w_models",
                       placeholder="FraserSuzuki, Gaussian", on_change=_mark_dirty)
         f1, f2 = st.columns(2)
-        f1.text_input("compounds file name", key="w_compounds_file", on_change=_mark_dirty)
-        f2.text_input("standard file name", key="w_standard_file", on_change=_mark_dirty)
+        f1.text_input("HPLC compounds file name", key="w_compounds_file", on_change=_mark_dirty)
+        f2.text_input("HPLC standard file name", key="w_standard_file", on_change=_mark_dirty)
         o1, o2 = st.columns(2)
-        o1.text_input("results folder name", key="w_results_dir", on_change=_mark_dirty)
-        o2.text_input("analysis folder name", key="w_analysis_dir", on_change=_mark_dirty)
+        o1.text_input("Results folder name", key="w_results_dir", on_change=_mark_dirty)
+        o2.text_input("Analysis folder name", key="w_analysis_dir", on_change=_mark_dirty)
         st.text_area("Colour palette (one hex per line)", key="w_palette", height=120, on_change=_mark_dirty)
 
-    with st.container(border=True):
-        st.subheader("compounds.csv — retention-time windows")
-        if st.session_state.get("compounds_seeded"):
-            st.caption("No compounds file in the folder yet — showing example values; apply to save.")
-        compounds_df = st.data_editor(st.session_state.compounds_df, num_rows="dynamic",
-                                      key="ed_compounds", on_change=_mark_dirty)
-        st.subheader("standard.csv — calibration points")
-        if st.session_state.get("standard_seeded"):
-            st.caption("No standard file in the folder yet — showing example values; apply to save.")
-        standard_df = st.data_editor(st.session_state.standard_df, num_rows="dynamic",
-                                     key="ed_standard", on_change=_mark_dirty)
-
-    # ---- GC-MS modality --------------------------------------------------
-    with st.container(border=True):
-        st.subheader("GC-MS modality  ·  optional")
-        st.checkbox("Enable GC-MS processing (adds a `gc:` block)",
-                    key="w_gc_enabled", on_change=_mark_dirty)
-        gc_compounds_df = st.session_state.gc_compounds_df
-        if st.session_state.w_gc_enabled:
-            g1, g2, g3 = st.columns(3)
-            g1.text_input("GC data subfolder", key="w_gc_datadir",
-                          placeholder="e.g. GC_data (blank = root)", on_change=_mark_dirty)
-            g2.selectbox("Quantification channel", ["eic", "tic", "fid"],
-                         key="w_gc_quant_channel", on_change=_mark_dirty,
-                         help="eic = quantifier-ion chromatogram (most selective).")
-            g3.number_input("Dilution factor (samples)", key="w_gc_dilution",
-                            min_value=0.0, step=1.0, on_change=_mark_dirty,
-                            help="Samples are commonly diluted 1:10 → 10. Standards are not scaled.")
-            c1, c2, c3 = st.columns(3)
-            c1.selectbox("Calibration source", ["injections", "csv"],
-                         key="w_gc_cal_source", on_change=_mark_dirty,
-                         help="injections = integrate standard .D folders; csv = a standard table.")
-            c2.checkbox("Force fit through origin", key="w_gc_force_origin", on_change=_mark_dirty,
-                        help="area = slope·conc; avoids non-zero conc at zero area.")
-            c3.checkbox("Require ion-ratio pass", key="w_gc_require_ratio", on_change=_mark_dirty,
-                        help="Report ion-ratio-unconfirmed samples as 0 µM.")
-            with st.expander("GC advanced — patterns, file names, thresholds"):
-                st.text_input("GC sample-name regex", key="w_gc_pattern", on_change=_mark_dirty,
-                              help='Groups: time, strain, replicate. Default: "50_s11_A".')
-                st.text_input("Standard-name regex (source = injections)", key="w_gc_std_pattern",
-                              on_change=_mark_dirty,
-                              help="Groups: conc, unit, compound. e.g. 250uM_34DMS_hexane.")
-                e1, e2 = st.columns(2)
-                e1.text_input("GC compounds file name", key="w_gc_compounds_file", on_change=_mark_dirty)
-                e2.text_input("GC standard CSV (source = csv)", key="w_gc_std_file", on_change=_mark_dirty)
-                x1, x2 = st.columns(2)
-                x1.checkbox("Clamp negative conc. to 0", key="w_gc_clamp", on_change=_mark_dirty)
-                x2.number_input("GC CV%% warning threshold", key="w_gc_cv", step=1.0, on_change=_mark_dirty)
-            if st.session_state.get("gc_compounds_seeded"):
-                st.caption("No GC compounds file in the folder yet — showing example values; apply to save.")
-            st.markdown("**gc_compounds.csv** — RT windows + quantifier / qualifier m/z")
-            st.caption('qualifier_mz e.g. "149=0.40;91=0.36" (=expected ratio); '
-                       "ion_ratio_tol = relative tolerance; calibrate_as = another "
-                       "compound whose standards calibrate this row, integrated on "
-                       "this row's quantifier_mz (a shared-ion assumption).")
-            gc_compounds_df = st.data_editor(st.session_state.gc_compounds_df, num_rows="dynamic",
-                                             key="ed_gc_compounds", on_change=_mark_dirty)
-        else:
-            st.caption("Enable to process GC-MS `.D` data alongside (or instead of) HPLC. "
-                       "When both run, a combined dashboard is written to `combined_analysis/`.")
-
+    st.space("small")
     if st.button("Apply changes", type="primary", icon=":material/save:"):
         ok, msg = apply_changes(exp, compounds_df, standard_df, gc_compounds_df,
                                 plot_strains, bar_time_points)
@@ -518,41 +667,44 @@ with tab_params:
 # RUN
 # ==========================================================================
 with tab_run:
-    st.caption(f"Experiment folder: `{exp}`")
+    st.caption(f"Experiment: `{exp}`")
 
-    # ── Init ──────────────────────────────────────────────────────────────────
+    # ── Step 1: Initialize ────────────────────────────────────────────────
     config_path = exp / "hplc_config.yaml"
     gc_compounds_path = exp / st.session_state.get("w_gc_compounds_file", "gc_compounds.csv")
+    files_exist = config_path.exists() or gc_compounds_path.exists()
+
     with st.container(border=True):
-        st.subheader("Initialize — auto-detect from GC-MS data")
+        hdr_col, badge_col = st.columns([5, 1], vertical_alignment="center")
+        with hdr_col:
+            st.markdown(":material/auto_awesome: **Step 1 · Initialize** — auto-detect from GC-MS data")
+        with badge_col:
+            if config_path.exists():
+                st.badge("Config ready", icon=":material/check:", color="green")
+            else:
+                st.badge("No config", icon=":material/warning:", color="orange")
         st.caption(
-            "Scans the folder for GC-MS `.D` injections, identifies standards by name, "
-            "detects peak RT windows and quantifier ions, and writes draft "
-            "`hplc_config.yaml` + `gc_compounds.csv`. "
-            "Review the **Parameters** tab afterwards to rename compounds, set "
-            "`calibrate_as`, and adjust the dilution factor."
+            "Scans your `.D` files, identifies standard injections, detects peak RT windows "
+            "and quantifier ions, and writes a starter `hplc_config.yaml` + `gc_compounds.csv`. "
+            "Run once per new experiment, then review compound names in **Parameters**."
         )
-        with st.expander("Init options"):
+        with st.expander("Init options", icon=":material/settings:"):
             ic1, ic2, ic3 = st.columns(3)
             init_rt_min = ic1.number_input(
                 "RT scan start (min)", value=1.5, min_value=0.0, step=0.5,
-                help="Ignore peaks before this time (skips solvent front).",
+                help="Peaks before this time are ignored (skips solvent front).",
             )
-            init_rt_max = ic2.number_input(
-                "RT scan end (min)", value=30.0, min_value=1.0, step=5.0,
-            )
+            init_rt_max = ic2.number_input("RT scan end (min)", value=30.0, min_value=1.0, step=5.0)
             init_rt_margin = ic3.number_input(
                 "RT window margin (min)", value=0.08, min_value=0.0, step=0.01, format="%.2f",
-                help="Added to each side of the detected peak edge.",
+                help="Added to each side of a detected peak edge when writing the RT window.",
             )
-        files_exist = config_path.exists() or gc_compounds_path.exists()
         if files_exist:
             st.warning(
-                "Config or compounds file already exists and will be **overwritten**. "
-                "The previous files are not backed up."
+                "Config or compounds file already exists and will be overwritten.",
+                icon=":material/warning:",
             )
-        if st.button("Initialize (auto-detect)", icon=":material/auto_awesome:",
-                     type="secondary"):
+        if st.button("Initialize", icon=":material/auto_awesome:", type="secondary"):
             extra = [
                 "--force",
                 "--rt-min", str(init_rt_min),
@@ -562,47 +714,53 @@ with tab_run:
             with st.spinner("Running `hplc init` …"):
                 code = run_stage(exp, "init", extra_args=extra)
             if code == 0:
-                st.success("Init complete — config files written. Reloading parameters…")
+                st.success("Config files written. Reloading parameters…", icon=":material/check:")
                 load_into_state(exp)
                 st.rerun()
             else:
                 st.error(f"`hplc init` failed (exit {code}). See log above.")
 
-    st.divider()
-    # ── Pipeline stages ───────────────────────────────────────────────────────
-    if st.session_state.get("dirty"):
-        st.warning("Unsaved parameter edits — go to **Parameters** and click **Apply changes** first.")
-    with st.container(horizontal=True):
-        go_process = st.button("Process (Stage 1)", width="stretch", icon=":material/play_arrow:")
-        go_analyze = st.button("Analyze (Stage 2)", width="stretch", icon=":material/play_arrow:")
-        go_run = st.button("Run both", type="primary", width="stretch", icon=":material/play_arrow:")
+    # ── Step 2: Run pipeline ──────────────────────────────────────────────
+    with st.container(border=True):
+        st.markdown(":material/play_arrow: **Step 2 · Run the pipeline**")
+        st.caption(
+            "**Process** (Stage 1) — integrate peaks and generate chromatogram plots.  "
+            "**Analyze** (Stage 2) — calibrate, quantify, and build the Bokeh dashboard.  "
+            "**Run both** — full pipeline end-to-end."
+        )
+        if st.session_state.get("dirty"):
+            st.warning("Unsaved parameter edits — go to **Parameters** and click **Apply changes** first.",
+                       icon=":material/edit:")
+        with st.container(horizontal=True):
+            go_process = st.button("Process", icon=":material/table_chart:", width="stretch")
+            go_analyze = st.button("Analyze", icon=":material/analytics:", width="stretch")
+            go_run = st.button("Run both", type="primary", icon=":material/play_arrow:", width="stretch")
 
     if go_process or go_analyze or go_run:
         sub = "process" if go_process else "analyze" if go_analyze else "run"
         with st.spinner(f"Running `hplc {sub}` …"):
             code = run_stage(exp, sub)
-        (st.success if code == 0 else st.error)(f"`hplc {sub}` finished (exit {code}).")
+        (st.success if code == 0 else st.error)(
+            f"`hplc {sub}` finished (exit {code}).",
+            icon=":material/check:" if code == 0 else ":material/error:",
+        )
         st.caption(f"Log saved to `{st.session_state.last_log_path}`")
     elif st.session_state.get("last_log"):
-        with st.expander("Last run log"):
+        with st.expander("Last run log", icon=":material/terminal:"):
             st.code(st.session_state.last_log, language="text")
 
     if st.session_state.get("last_log_path") and Path(st.session_state.last_log_path).exists():
         lp = Path(st.session_state.last_log_path)
-        st.download_button("Download last log (.txt)", data=lp.read_bytes(),
+        st.download_button("Download last log", data=lp.read_bytes(),
                            file_name=lp.name, mime="text/plain", icon=":material/download:")
 
 # ==========================================================================
 # RESULTS
 # ==========================================================================
-# Only render (and read/embed the large HTML files) when the Results tab is
-# actually open — avoids loading multi-MB files on every rerun of other tabs.
-if tab_results.open:
-  with tab_results:
+with tab_results:
     dashboard = exp / analysis_dir / "analysis_plots.html"
     overlay = exp / results_dir / "chromatogram_overlay_interactive.html"
     gallery = exp / results_dir / "chromatogram_gallery.html"
-    # GC + combined outputs (fixed default folder names).
     gc_dashboard = exp / "gc_analysis" / "analysis_plots.html"
     gc_overlay = exp / "gc_results" / "gc_tic_overlay_interactive.html"
     gc_gallery = exp / "gc_results" / "chromatogram_gallery.html"
@@ -612,15 +770,25 @@ if tab_results.open:
     gc_files = (gc_dashboard, gc_overlay, gc_gallery)
 
     if not any(p.exists() for p in (*hplc_files, *gc_files, combined)):
-        st.info("No result files yet — run a stage on the **Run** tab.")
+        st.space("large")
+        with st.container(horizontal_alignment="center"):
+            st.markdown(":material/analytics:")
+            st.subheader("No results yet", text_alignment="center")
+            st.caption(
+                "Go to the **Run** tab and click **Run both** to process your injections "
+                "and generate calibrated concentration plots.",
+                text_alignment="center",
+            )
+        st.space("large")
     else:
         if combined.exists():
             st.subheader("Combined HPLC + GC dashboard")
             output_row("Combined dashboard", combined)
             embed_html(combined, height=900)
-            st.divider()
 
         if any(p.exists() for p in hplc_files):
+            if combined.exists():
+                st.divider()
             st.subheader("HPLC — analysis dashboard")
             if dashboard.exists():
                 output_row("HPLC dashboard", dashboard)
