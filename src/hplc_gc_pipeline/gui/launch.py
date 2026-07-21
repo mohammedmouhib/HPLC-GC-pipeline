@@ -4,12 +4,18 @@
 ``streamlit run app.py``. Streamlit runs its own web server (bound to
 localhost) and opens a browser tab. Anything after ``--`` on the streamlit
 command line is passed through to app.py as ``sys.argv``.
+
+The server shuts down automatically when the last browser tab is closed.
 """
 
 from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +32,44 @@ def _skip_streamlit_onboarding() -> None:
     if not cred.exists():
         cred.parent.mkdir(parents=True, exist_ok=True)
         cred.write_text('[general]\nemail = ""\n', encoding="utf-8")
+
+
+def _active_sessions(port: int) -> int:
+    """Return the current active-session count from Streamlit's metrics endpoint."""
+    url = f"http://localhost:{port}/_stcore/metrics"
+    try:
+        resp = urllib.request.urlopen(url, timeout=2)
+        for line in resp.read().decode().splitlines():
+            if line.startswith("active_sessions "):
+                return int(float(line.split()[-1]))
+    except Exception:
+        pass
+    return -1  # server not yet up or unreachable
+
+
+def _watch_and_terminate(proc: subprocess.Popen, port: int) -> None:
+    """Daemon thread: terminates *proc* once all browser tabs are closed."""
+    # Wait for the server to be up (up to 30 s)
+    health = f"http://localhost:{port}/_stcore/health"
+    for _ in range(60):
+        try:
+            urllib.request.urlopen(health, timeout=1)
+            break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        return  # server never came up
+
+    ever_connected = False
+    while proc.poll() is None:
+        time.sleep(2)
+        n = _active_sessions(port)
+        if n > 0:
+            ever_connected = True
+        elif ever_connected and n == 0:
+            print("\nAll browser tabs closed — shutting down.", flush=True)
+            proc.terminate()
+            return
 
 
 def launch_gui(experiment_dir: Optional[Path] = None, port: int = 8501) -> int:
@@ -52,7 +96,12 @@ def launch_gui(experiment_dir: Optional[Path] = None, port: int = 8501) -> int:
         cmd += ["--", str(Path(experiment_dir).expanduser().resolve())]
 
     print(f"Starting the HPLC GUI at http://localhost:{port}  (Ctrl-C to stop)")
+    proc = subprocess.Popen(cmd)
+    t = threading.Thread(target=_watch_and_terminate, args=(proc, port), daemon=True)
+    t.start()
     try:
-        return subprocess.call(cmd)
+        proc.wait()
+        return proc.returncode if proc.returncode is not None else 0
     except KeyboardInterrupt:
+        proc.terminate()
         return 0
