@@ -1,4 +1,4 @@
-"""HPLC Results page — chromatogram overlay · analysis dashboard · gallery."""
+"""HPLC Results page — chromatogram gallery · overlay · analysis dashboard."""
 
 from __future__ import annotations
 
@@ -17,25 +17,26 @@ overlay   = exp / results_dir  / "chromatogram_overlay_interactive.html"
 dashboard = exp / analysis_dir / "analysis_plots.html"
 gallery   = exp / results_dir  / "chromatogram_gallery.html"
 
-# ── 1. Chromatogram overlay ───────────────────────────────────────────────
+# ── 1. Per-injection chromatogram gallery ─────────────────────────────────
+if gallery.exists():
+    st.subheader("Per-injection chromatograms")
+    result_header(gallery)
+    embed_html(gallery, height=900, scrolling=True)
+
+# ── 2. Chromatogram overlay ───────────────────────────────────────────────
 if overlay.exists():
+    if gallery.exists():
+        st.divider()
     st.subheader("Chromatogram overlay")
     result_header(overlay)
     embed_html(overlay, height=700)
 
-# ── 2. Analysis dashboard (full content height, no inner scroll) ──────────
+# ── 3. Analysis dashboard (full content height, no inner scroll) ──────────
 if dashboard.exists():
-    if overlay.exists():
+    if overlay.exists() or gallery.exists():
         st.divider()
     st.subheader("Analysis")
     result_header(dashboard)
     embed_html(dashboard,
                height=_bokeh_content_height(dashboard, n_cols=n_cols),
                scrolling=False)
-
-# ── 3. Per-injection chromatogram gallery ─────────────────────────────────
-if gallery.exists():
-    st.divider()
-    st.subheader("Per-injection chromatograms")
-    result_header(gallery)
-    embed_html(gallery, height=900, scrolling=True)
