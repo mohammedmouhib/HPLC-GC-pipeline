@@ -93,9 +93,12 @@ with st.sidebar:
             st.caption(":material/check_circle: Ready — open **Results**.")
 
 # --------------------------------------------------------------------------
-# Auto-load when a path was pre-supplied on the command line
+# Auto-load when a path was pre-supplied on the command line, or re-init
+# if doc exists but w_* keys were dropped (e.g. after a navigation rerun).
 # --------------------------------------------------------------------------
-if "doc" not in st.session_state and exp_str and Path(exp_str).is_dir():
+if exp_str and Path(exp_str).is_dir() and (
+    "doc" not in st.session_state or "w_gc_enabled" not in st.session_state
+):
     load_into_state(Path(exp_str))
 
 # --------------------------------------------------------------------------
