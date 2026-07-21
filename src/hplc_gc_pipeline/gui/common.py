@@ -379,6 +379,27 @@ def run_stage(exp: Path, subcommand: str, extra_args: list[str] | None = None) -
 # --------------------------------------------------------------------------
 # Result helpers
 # --------------------------------------------------------------------------
+def _bokeh_content_height(path: Path, n_cols: int = 3) -> int:
+    """Estimate the pixel height of a Bokeh dashboard HTML file.
+
+    Counts ``"height": N`` entries in the JSON payload (one per figure),
+    divides by n_cols to get the number of rows, and multiplies by the
+    plot height. Falls back to 2000 if parsing fails.
+    """
+    import math, re
+    try:
+        html = path.read_text(encoding="utf-8", errors="replace")
+        heights = [int(h) for h in re.findall(r'"height":(\d+)', html)]
+        if not heights:
+            return 2000
+        plot_h = max(set(heights), key=heights.count)   # modal value
+        n_plots = len(heights)
+        n_rows = math.ceil(n_plots / max(n_cols, 1))
+        return n_rows * plot_h + 300    # +300 for toolbars, titles, spacing
+    except Exception:
+        return 2000
+
+
 def embed_html(path: Path, height: int = 900, scrolling: bool = False) -> None:
     """Embed an HTML result file. Uses the local file server when available
     (proper Bokeh sizing); falls back to inline injection."""
