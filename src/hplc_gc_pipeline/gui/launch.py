@@ -10,6 +10,9 @@ The server shuts down automatically when the last browser tab is closed.
 
 from __future__ import annotations
 
+import os
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -32,6 +35,31 @@ def _skip_streamlit_onboarding() -> None:
     if not cred.exists():
         cred.parent.mkdir(parents=True, exist_ok=True)
         cred.write_text('[general]\nemail = ""\n', encoding="utf-8")
+
+
+def _is_port_in_use(port: int) -> bool:
+    """Return True if something is already listening on *port*."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _free_port(port: int) -> None:
+    """Kill any process currently listening on *port* (best-effort)."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pids = [int(p) for p in result.stdout.strip().splitlines() if p.strip().isdigit()]
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if pids:
+            time.sleep(1.5)
+    except Exception:
+        pass
 
 
 def _active_sessions(port: int) -> int:
@@ -61,15 +89,22 @@ def _watch_and_terminate(proc: subprocess.Popen, port: int) -> None:
         return  # server never came up
 
     ever_connected = False
+    consecutive_zero = 0
     while proc.poll() is None:
         time.sleep(2)
         n = _active_sessions(port)
         if n > 0:
             ever_connected = True
+            consecutive_zero = 0
         elif ever_connected and n == 0:
-            print("\nAll browser tabs closed — shutting down.", flush=True)
-            proc.terminate()
-            return
+            consecutive_zero += 1
+            if consecutive_zero >= 2:
+                print("\nAll browser tabs closed — shutting down.", flush=True)
+                proc.terminate()
+                return
+        else:
+            # n == -1 (metrics unreachable) or not yet ever connected
+            consecutive_zero = 0
 
 
 def launch_gui(experiment_dir: Optional[Path] = None, port: int = 8501) -> int:
@@ -85,6 +120,10 @@ def launch_gui(experiment_dir: Optional[Path] = None, port: int = 8501) -> int:
         return 1
 
     _skip_streamlit_onboarding()
+
+    if _is_port_in_use(port):
+        print(f"Port {port} is already in use — stopping previous instance…", flush=True)
+        _free_port(port)
 
     cmd = [
         sys.executable, "-m", "streamlit", "run", str(APP_PATH),

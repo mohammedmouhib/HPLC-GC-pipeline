@@ -235,8 +235,8 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_clamp = bool(g(["analysis", "calibration", "clamp_negative_to_zero"], True))
     st.session_state.w_zero = bool(g(["analysis", "calibration", "zero_area_zero_conc"], True))
     st.session_state.w_pattern = g(["analysis", "sample_name", "pattern"], "")
-    st.session_state.w_compounds_file = g(["analysis", "compounds_file"], "compounds.csv")
-    st.session_state.w_standard_file = g(["analysis", "standard_file"], "standard.csv")
+    st.session_state.w_compounds_file = g(["analysis", "compounds_file"], "compounds.csv") or "compounds.csv"
+    st.session_state.w_standard_file = g(["analysis", "standard_file"], "standard.csv") or "standard.csv"
 
     st.session_state.w_ncols = int(g(["plots", "n_cols"], 2))
     st.session_state.w_strains_txt = ", ".join(g(["plots", "plot_strains"], []) or [])
@@ -249,11 +249,11 @@ def load_into_state(exp: Path) -> None:
 
     st.session_state.w_gc_enabled = "gc" in doc
     st.session_state.w_gc_datadir = g(["gc", "data_dir"], "") or ""
-    st.session_state.w_gc_compounds_file = g(["gc", "compounds_file"], "gc_compounds.csv")
+    st.session_state.w_gc_compounds_file = g(["gc", "compounds_file"], "gc_compounds.csv") or "gc_compounds.csv"
     st.session_state.w_gc_quant_channel = g(["gc", "processing", "quant_channel"], "eic")
     st.session_state.w_gc_cal_source = g(["gc", "calibration", "source"], "injections")
     st.session_state.w_gc_std_pattern = g(["gc", "calibration", "standard_pattern"], GC_STANDARD_PATTERN_DEFAULT)
-    st.session_state.w_gc_std_file = g(["gc", "calibration", "standard_file"], "gc_standard.csv")
+    st.session_state.w_gc_std_file = g(["gc", "calibration", "standard_file"], "gc_standard.csv") or "gc_standard.csv"
     st.session_state.w_gc_dilution = float(g(["gc", "calibration", "dilution_factor"], 1.0))
     st.session_state.w_gc_force_origin = bool(g(["gc", "calibration", "force_through_origin"], False))
     st.session_state.w_gc_clamp = bool(g(["gc", "calibration", "clamp_negative_to_zero"], True))
@@ -273,6 +273,11 @@ def load_into_state(exp: Path) -> None:
 
     for k in ("ed_compounds", "ed_standard", "ed_gc_compounds", "w_strains_ms", "w_bartp_ms"):
         st.session_state.pop(k, None)
+    # Stage the mode default via a non-widget key so it can be applied before the
+    # toggle widget renders in app.py.  Only reset when the folder actually changes
+    # so that Copy / Initialize on the same folder preserve the user's choice.
+    if str(exp) != st.session_state.get("loaded_exp"):
+        st.session_state._reset_edit_mode = not _has_any_results(exp)
     st.session_state.loaded_exp = str(exp)
     st.session_state.dirty = False
     _ensure_file_server(str(exp))
@@ -304,8 +309,10 @@ def apply_changes(
     cfg_set(doc, ["analysis", "calibration", "clamp_negative_to_zero"], bool(s.w_clamp))
     cfg_set(doc, ["analysis", "calibration", "zero_area_zero_conc"], bool(s.w_zero))
     cfg_set(doc, ["analysis", "sample_name", "pattern"], s.w_pattern)
-    cfg_set(doc, ["analysis", "compounds_file"], s.w_compounds_file)
-    cfg_set(doc, ["analysis", "standard_file"], s.w_standard_file)
+    cfile = s.w_compounds_file or "compounds.csv"
+    sfile = s.w_standard_file or "standard.csv"
+    cfg_set(doc, ["analysis", "compounds_file"], cfile)
+    cfg_set(doc, ["analysis", "standard_file"], sfile)
     cfg_set(doc, ["plots", "n_cols"], int(s.w_ncols))
     cfg_set(doc, ["plots", "plot_strains"], plot_strains or None)
     cfg_set(doc, ["plots", "strain_order"], _csv_list(s.w_order))
@@ -315,12 +322,14 @@ def apply_changes(
     cfg_set(doc, ["output", "analysis_dirname"], s.w_analysis_dir or "analysis")
 
     if s.w_gc_enabled:
+        gcfile = s.w_gc_compounds_file or "gc_compounds.csv"
+        gcstdfile = s.w_gc_std_file or "gc_standard.csv"
         cfg_set(doc, ["gc", "data_dir"], s.w_gc_datadir or None)
-        cfg_set(doc, ["gc", "compounds_file"], s.w_gc_compounds_file)
+        cfg_set(doc, ["gc", "compounds_file"], gcfile)
         cfg_set(doc, ["gc", "processing", "quant_channel"], s.w_gc_quant_channel)
         cfg_set(doc, ["gc", "calibration", "source"], s.w_gc_cal_source)
         cfg_set(doc, ["gc", "calibration", "standard_pattern"], s.w_gc_std_pattern)
-        cfg_set(doc, ["gc", "calibration", "standard_file"], s.w_gc_std_file)
+        cfg_set(doc, ["gc", "calibration", "standard_file"], gcstdfile)
         cfg_set(doc, ["gc", "calibration", "dilution_factor"], float(s.w_gc_dilution))
         cfg_set(doc, ["gc", "calibration", "force_through_origin"], bool(s.w_gc_force_origin))
         cfg_set(doc, ["gc", "calibration", "clamp_negative_to_zero"], bool(s.w_gc_clamp))
@@ -334,10 +343,10 @@ def apply_changes(
     buf = StringIO()
     yaml.dump(doc, buf)
     (exp / "hplc_config.yaml").write_text(buf.getvalue(), encoding="utf-8")
-    compounds_df.dropna(how="all").to_csv(exp / s.w_compounds_file, index=False)
-    standard_df.dropna(how="all").to_csv(exp / s.w_standard_file, index=False)
+    compounds_df.dropna(how="all").to_csv(exp / cfile, index=False)
+    standard_df.dropna(how="all").to_csv(exp / sfile, index=False)
     if s.w_gc_enabled:
-        gc_compounds_df.dropna(how="all").to_csv(exp / s.w_gc_compounds_file, index=False)
+        gc_compounds_df.dropna(how="all").to_csv(exp / gcfile, index=False)
 
     try:
         from hplc_gc_pipeline.config import load_config

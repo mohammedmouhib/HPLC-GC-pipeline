@@ -28,9 +28,24 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------
-# Sidebar — folder picker + status (appears above the navigation links)
+# Sidebar — folder picker + status
 # --------------------------------------------------------------------------
 with st.sidebar:
+    # Apply any pending edit-mode default BEFORE the toggle widget renders.
+    if "_reset_edit_mode" in st.session_state:
+        st.session_state.edit_mode = st.session_state.pop("_reset_edit_mode")
+
+    # Edit mode toggle — first sidebar item once a folder is loaded,
+    # positioned just below the navigation links.
+    if "doc" in st.session_state:
+        st.toggle(
+            "Edit mode",
+            key="edit_mode",
+            help="Off: browse parameters and results without changes. "
+                 "On: modify parameters and re-run the pipeline.",
+        )
+        st.divider()
+
     st.header("Experiment folder")
 
     if st.button("Browse for folder", icon=":material/folder_open:", width="stretch"):
@@ -51,7 +66,7 @@ with st.sidebar:
     if st.button("Load", type="primary", width="stretch", icon=":material/refresh:"):
         if exp_str and Path(exp_str).is_dir():
             load_into_state(Path(exp_str))
-            st.success("Loaded.")
+            st.rerun()
         else:
             st.error("Not a valid directory.")
 
@@ -84,10 +99,10 @@ with st.sidebar:
 
         st.space("small")
         if not _config_ok:
-            st.info("Go to **Run → Initialize** to generate a starter config.",
+            st.info("Go to **Initialize** to write a starter config.",
                     icon=":material/arrow_forward:")
         elif not _results_ok:
-            st.info("Go to **Run → Run both** to process your data.",
+            st.info("Go to **Run** → click **Run both** to process your data.",
                     icon=":material/arrow_forward:")
         else:
             st.caption(":material/check_circle: Ready — see Results in the sidebar.")
@@ -104,51 +119,9 @@ if exp_str and Path(exp_str).is_dir() and (
 # --------------------------------------------------------------------------
 # Navigation
 # --------------------------------------------------------------------------
-def _welcome() -> None:
-    st.space("large")
-    with st.container(horizontal_alignment="center"):
-        st.markdown(":material/science:")
-        st.title("HPLC / GC-MS pipeline", text_alignment="center")
-        st.caption(
-            "Process raw Agilent .D injections → calibrated concentrations → interactive plots",
-            text_alignment="center",
-        )
-
-    st.space("large")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        with st.container(border=True):
-            st.markdown(":material/folder_open: **Step 1 — Load**")
-            st.caption(
-                "Click **Browse for folder** in the sidebar to pick your experiment folder. "
-                "The folder should contain Agilent `.D` injection subfolders."
-            )
-    with col2:
-        with st.container(border=True):
-            st.markdown(":material/auto_awesome: **Step 2 — Initialize** *(new experiments)*")
-            st.caption(
-                "Open **Run** and click **Initialize**. "
-                "The pipeline scans your `.D` files, detects peaks and m/z values, "
-                "and writes a starter config automatically."
-            )
-    with col3:
-        with st.container(border=True):
-            st.markdown(":material/play_arrow: **Step 3 — Run & explore**")
-            st.caption(
-                "Click **Run both** to process all injections and build calibration curves. "
-                "Results appear in **Results** as interactive Bokeh dashboards."
-            )
-
-    st.space("large")
-    st.caption(
-        "Already have a configured experiment? Just enter the folder path in the sidebar — "
-        "the pipeline will pick up any existing config automatically.",
-        text_alignment="center",
-    )
-
 
 if "doc" not in st.session_state:
-    pages = [st.Page(_welcome, title="Get started", icon=":material/home:", default=True)]
+    pages = [st.Page("app_pages/home.py", title="Get started", icon=":material/home:", default=True)]
 else:
     exp = Path(st.session_state.loaded_exp)
     analysis_dir = st.session_state.get("w_analysis_dir", "analysis")
@@ -179,10 +152,11 @@ else:
         )
 
     core_pages = [
+        st.Page("app_pages/home.py", title="Guide", icon=":material/book:"),
+        st.Page("app_pages/initialize.py", title="Initialize", icon=":material/auto_awesome:"),
         st.Page("app_pages/parameters.py", title="Parameters",
                 icon=":material/tune:", default=True),
-        st.Page("app_pages/run.py", title="Run",
-                icon=":material/play_arrow:"),
+        st.Page("app_pages/run.py", title="Run", icon=":material/play_arrow:"),
     ]
     pages = {"": core_pages, "Results": result_pages} if result_pages else core_pages
 
