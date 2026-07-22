@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from io import StringIO
 
 import streamlit as st
 
 from hplc_gc_pipeline.gui.common import (
+    GC_STANDARD_PATTERN_DEFAULT,
     PKG_TEMPLATE,
     _pick_folder,
+    cfg_set,
     load_into_state,
     run_stage,
 )
+from ruamel.yaml import YAML as _YAML
+
+_yaml = _YAML()
+_yaml.preserve_quotes = True
 
 exp = Path(st.session_state.loaded_exp)
 _ro = not st.session_state.get("edit_mode", True)
@@ -188,3 +195,73 @@ elif source == "Copy from a previous project":
                         )
                         load_into_state(exp)
                         st.rerun()
+
+# ── Step C: Calibration quick-setup (shown once a config exists) ───────────
+if config_path.exists() and not _ro:
+    with st.expander(
+        "Optional: calibration quick-setup",
+        icon=":material/science:",
+        expanded=False,
+    ):
+        st.caption(
+            "Answer a few questions to pre-configure calibration in `hplc_config.yaml`. "
+            "You can also change these settings at any time in **Parameters**."
+        )
+
+        has_stds = st.toggle(
+            "This experiment includes standard/calibration injections in the .D data",
+            key="init_has_stds",
+            value=False,
+        )
+
+        if has_stds:
+            st.markdown(
+                "Standard injections must follow a naming convention so the pipeline can "
+                "detect them automatically. The default pattern matches names like "
+                "`250uM_pCA_hexane` — concentration, unit, compound name, separated by `_`."
+            )
+            std_pattern = st.text_input(
+                "Standard-name pattern (regex)",
+                value=GC_STANDARD_PATTERN_DEFAULT,
+                key="init_std_pattern",
+                help="Named groups required: conc, unit, compound.",
+            )
+            cal_source = st.segmented_control(
+                "Calibration source",
+                options=["injections", "both"],
+                default="injections",
+                key="init_cal_source",
+                help="injections = use only these .D standard injections.  "
+                     "both = pool with any pre-existing standard.csv as well.",
+            )
+        else:
+            cal_source = "csv"
+            std_pattern = GC_STANDARD_PATTERN_DEFAULT
+
+        dilution = st.number_input(
+            "Sample dilution factor",
+            value=1.0, min_value=0.0, step=1.0,
+            key="init_dilution",
+            help="If samples were diluted before injection, enter the inverse dilution "
+                 "(e.g. 1:10 dilution → 10). Standards are never scaled.",
+        )
+
+        if st.button(
+            "Apply calibration settings to config",
+            icon=":material/save:",
+            type="primary",
+        ):
+            try:
+                with open(config_path, "r", encoding="utf-8") as fh:
+                    doc = _yaml.load(fh)
+                cfg_set(doc, ["analysis", "calibration", "source"], cal_source)
+                cfg_set(doc, ["analysis", "calibration", "dilution_factor"], float(dilution))
+                if has_stds:
+                    cfg_set(doc, ["analysis", "calibration", "standard_pattern"], std_pattern)
+                buf = StringIO()
+                _yaml.dump(doc, buf)
+                config_path.write_text(buf.getvalue(), encoding="utf-8")
+                load_into_state(exp)
+                st.toast("Calibration settings saved to hplc_config.yaml.", icon=":material/check:")
+            except Exception as exc:
+                st.error(f"Failed to write config: {exc}")

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import streamlit as st
 
+import pandas as pd
+
 from hplc_gc_pipeline.gui.common import (
     GC_SAMPLE_PATTERN_DEFAULT,
     GC_STANDARD_PATTERN_DEFAULT,
@@ -168,8 +170,39 @@ with st.expander(
             help='Named groups: time, strain, replicate. Default matches "24, s1, A".',
         )
 
+        st.divider()
+        st.markdown("**Calibration**")
+        b1, b2, b3 = st.columns(3)
+        b1.segmented_control(
+            "Standard source", ["csv", "injections", "both"],
+            key="w_cal_source", on_change=_mark_dirty, disabled=_ro,
+            help="csv = read standard.csv. injections = auto-detect standard .D folders by name "
+                 "(pattern below). both = pool both sources for one regression.",
+        )
+        b2.number_input(
+            "Sample dilution factor", key="w_dilution",
+            min_value=0.0, step=1.0, on_change=_mark_dirty, disabled=_ro,
+            help="Multiply sample concentrations by this to recover the undiluted value. "
+                 "1:10 dilution → 10. Standards are never scaled.",
+        )
+        b3.toggle(
+            "Force fit through origin",
+            key="w_force_origin", on_change=_mark_dirty, disabled=_ro,
+            help="Fit conc = slope·area (no intercept). Removes artefact from a negative intercept.",
+        )
+        if st.session_state.get("w_cal_source", "csv") in ("injections", "both"):
+            st.text_input(
+                "Standard-name pattern", key="w_std_pattern", on_change=_mark_dirty, disabled=_ro,
+                help="Regex with named groups (conc, unit, compound) matching standard injection "
+                     "names. Example: '250uM_pCA_hexane' → conc=250, unit=uM, compound=pCA.",
+            )
+
     with st.container(border=True):
         st.subheader("compounds.csv — retention-time windows")
+        st.caption(
+            "Add a `calibrate_as` value to borrow another compound's calibration curve "
+            "(useful when two compounds share a chromophore or response factor)."
+        )
         if st.session_state.get("compounds_seeded"):
             st.caption("No compounds file yet — showing example values; apply to save.")
         compounds_df = st.data_editor(
@@ -178,9 +211,44 @@ with st.expander(
             disabled=_ro,
             key="ed_compounds", on_change=_mark_dirty,
         )
+
         st.subheader("standard.csv — calibration points")
         if st.session_state.get("standard_seeded"):
             st.caption("No standard file yet — showing example values; apply to save.")
+
+        # Import-from-injections helper
+        _peak_csv = exp / st.session_state.get("w_results_dir", "results") / "peak_results.csv"
+        _cal_source = st.session_state.get("w_cal_source", "csv")
+        if not _ro and _peak_csv.exists() and _cal_source in ("injections", "both"):
+            if st.button(
+                "Import calibration points from injections",
+                icon=":material/download:",
+                help="Detect standard .D injections in peak_results.csv and append new rows to the "
+                     "table below. Uses the standard-name pattern and RT windows from compounds.csv.",
+            ):
+                try:
+                    from hplc_gc_pipeline.calibration import _load_from_injections
+                    _cdf = st.session_state.get("ed_compounds") or st.session_state.compounds_df
+                    _pattern = st.session_state.get("w_std_pattern", "")
+                    _inj = _load_from_injections(_peak_csv, _cdf, _pattern)
+                    if _inj.empty:
+                        st.warning("No matching standard injections found with the current pattern.",
+                                   icon=":material/info:")
+                    else:
+                        _inj = _inj.drop(columns=["_source"], errors="ignore")
+                        _existing = st.session_state.get("ed_standard") or st.session_state.standard_df
+                        merged = pd.concat([_existing, _inj], ignore_index=True).drop_duplicates(
+                            subset=["Compound", "concentration", "Area_Integral"]
+                        )
+                        st.session_state.standard_df = merged
+                        st.session_state.pop("ed_standard", None)
+                        _mark_dirty()
+                        st.toast(f"Imported {len(_inj)} calibration point(s) from injections.",
+                                 icon=":material/check:")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Import failed: {exc}")
+
         standard_df = st.data_editor(
             st.session_state.standard_df,
             num_rows="fixed" if _ro else "dynamic",

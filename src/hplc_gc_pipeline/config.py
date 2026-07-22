@@ -76,6 +76,22 @@ class CalibrationConfig:
     # rather than the calibration intercept b. Fixes the "pCA ~15 uM at zero
     # area" artefact. See README "Known fixes".
     zero_area_zero_conc: bool = True
+    # Calibration source: "csv" (read standard.csv), "injections" (auto-detect
+    # standard .D folders in peak_results.csv by name pattern), or "both"
+    # (pool both sources for a single regression).
+    source: str = "csv"
+    # Regex (with named groups conc, unit, compound) identifying standard
+    # injections by their sample name — e.g. "250uM_pCA_hexane" → 250 µM pCA.
+    # Used when source is "injections" or "both".
+    standard_pattern: str = (
+        r"^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)"
+    )
+    # Multiply *sample* concentrations by this factor to recover the undiluted
+    # value. Standards are never scaled.  Example: 1:10 dilution → 10.
+    dilution_factor: float = 1.0
+    # Fit conc = slope*area (no intercept). Removes the "non-zero concentration
+    # at zero area" artefact from a negative intercept.
+    force_through_origin: bool = False
 
 
 @dataclass
@@ -390,6 +406,10 @@ def _validate(cfg: Config) -> None:
         raise ValueError("plots.n_cols must be >= 1")
     if cfg.analysis.cv_warning_threshold < 0:
         raise ValueError("analysis.cv_warning_threshold must be >= 0")
+    if cfg.analysis.calibration.source not in ("csv", "injections", "both"):
+        raise ValueError("analysis.calibration.source must be 'csv', 'injections', or 'both'")
+    if cfg.analysis.calibration.dilution_factor <= 0:
+        raise ValueError("analysis.calibration.dilution_factor must be positive")
     if cfg.gc is not None:
         if cfg.gc.processing.quant_channel not in ("eic", "tic", "fid"):
             raise ValueError("gc.processing.quant_channel must be 'eic', 'tic', or 'fid'")

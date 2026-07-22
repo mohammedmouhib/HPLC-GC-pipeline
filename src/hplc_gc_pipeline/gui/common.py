@@ -29,7 +29,7 @@ PKG_COMPOUNDS = HERE / "compounds_default.csv"
 PKG_STANDARD = HERE / "standard_default.csv"
 PKG_GC_COMPOUNDS = HERE / "gc_compounds_default.csv"
 
-COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "Notes"]
+COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "calibrate_as", "Notes"]
 STANDARD_COLS = ["Compound", "Area_Integral", "concentration"]
 GC_COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "quantifier_mz",
                     "qualifier_mz", "ion_ratio_tol", "calibrate_as", "Notes"]
@@ -234,6 +234,10 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_cv = float(g(["analysis", "cv_warning_threshold"], 15.0))
     st.session_state.w_clamp = bool(g(["analysis", "calibration", "clamp_negative_to_zero"], True))
     st.session_state.w_zero = bool(g(["analysis", "calibration", "zero_area_zero_conc"], True))
+    st.session_state.w_cal_source = g(["analysis", "calibration", "source"], "csv")
+    st.session_state.w_std_pattern = g(["analysis", "calibration", "standard_pattern"], GC_STANDARD_PATTERN_DEFAULT)
+    st.session_state.w_dilution = float(g(["analysis", "calibration", "dilution_factor"], 1.0))
+    st.session_state.w_force_origin = bool(g(["analysis", "calibration", "force_through_origin"], False))
     st.session_state.w_pattern = g(["analysis", "sample_name", "pattern"], "")
     st.session_state.w_compounds_file = g(["analysis", "compounds_file"], "compounds.csv") or "compounds.csv"
     st.session_state.w_standard_file = g(["analysis", "standard_file"], "standard.csv") or "standard.csv"
@@ -308,6 +312,10 @@ def apply_changes(
     cfg_set(doc, ["analysis", "cv_warning_threshold"], float(s.w_cv))
     cfg_set(doc, ["analysis", "calibration", "clamp_negative_to_zero"], bool(s.w_clamp))
     cfg_set(doc, ["analysis", "calibration", "zero_area_zero_conc"], bool(s.w_zero))
+    cfg_set(doc, ["analysis", "calibration", "source"], s.w_cal_source or "csv")
+    cfg_set(doc, ["analysis", "calibration", "standard_pattern"], s.w_std_pattern or "")
+    cfg_set(doc, ["analysis", "calibration", "dilution_factor"], float(s.w_dilution))
+    cfg_set(doc, ["analysis", "calibration", "force_through_origin"], bool(s.w_force_origin))
     cfg_set(doc, ["analysis", "sample_name", "pattern"], s.w_pattern)
     cfile = s.w_compounds_file or "compounds.csv"
     sfile = s.w_standard_file or "standard.csv"

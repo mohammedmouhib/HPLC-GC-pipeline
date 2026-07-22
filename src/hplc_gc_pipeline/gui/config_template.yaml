@@ -56,6 +56,25 @@ analysis:
   cv_warning_threshold: 15.0
 
   calibration:
+    # Calibration source:
+    #   csv        — read standard.csv (Compound, Area_Integral, concentration)
+    #   injections — auto-detect standard .D injections in peak_results.csv by name
+    #   both       — pool csv rows and injection-detected points for one regression
+    source: csv
+
+    # Regex (named groups: conc, unit, compound) identifying standard injections
+    # by sample name. Used when source is "injections" or "both".
+    # Example match: "250uM_pCA_hexane" → 250 µM pCA
+    standard_pattern: '^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)'
+
+    # Multiply *sample* concentrations by this factor to recover the undiluted value.
+    # Standards are never scaled.  Example: 1:10 dilution → dilution_factor: 10
+    dilution_factor: 1.0
+
+    # Fit conc = slope*area (no intercept). Removes the "non-zero concentration
+    # at zero area" artefact when the intercept is negative.
+    force_through_origin: false
+
     # A linear fit can predict negative concentration near the origin; clamp to 0.
     clamp_negative_to_zero: true
     # Report undetected compounds (area == 0) as 0 uM instead of the fit's

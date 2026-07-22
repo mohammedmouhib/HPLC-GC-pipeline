@@ -112,12 +112,17 @@ def _run_hplc_analysis(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = sample_names.pool_replicates_across_experiments(df)
 
     compounds_df = compounds_mod.load_compounds(cfg.compounds_path)
-    standards_df = calibration.load_standards(cfg.standard_path)
-    cal = calibration.build_calibration_functions(standards_df, compounds_df)
+    standards_df = calibration.load_standards(
+        cfg.standard_path,
+        peak_results_csv=cfg.peak_results_csv,
+        compounds_df=compounds_df,
+        cfg=acfg.calibration,
+    )
+    cal = calibration.build_calibration_functions(standards_df, compounds_df, cfg=acfg.calibration)
 
     assigned_df = compounds_mod.assign_compounds(df, compounds_df, exclude_unknown=acfg.exclude_unknown)
     consolidated_df = consolidate.consolidate_compound_areas(assigned_df, compounds_df, all_samples_df=df)
-    consolidated_df = calibration.add_concentration_column(consolidated_df, cal, acfg.calibration)
+    consolidated_df = calibration.add_concentration_column(consolidated_df, cal, cfg=acfg.calibration)
 
     stats_df = stats.compute_replicate_stats(consolidated_df, cv_warning_threshold=acfg.cv_warning_threshold)
 
