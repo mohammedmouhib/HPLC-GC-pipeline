@@ -52,36 +52,57 @@ st.caption(
 # ---------------------------------------------------------------------------
 
 def _scan_experiment(folder: Path) -> dict:
-    """Fast pathlib scan — no GC/HPLC loading, just folder structure."""
-    hplc_dirs: dict[str, int] = {}  # subdir name -> count of HPLC .D folders
+    """Recursive pathlib scan — counts HPLC/GC .D folders at any nesting depth.
+
+    Counts are aggregated by the top-level child of the experiment folder so the
+    summary table shows a useful label (e.g. ``HPLC_data``) rather than deep paths.
+    """
+    hplc_dirs: dict[str, int] = {}
     gc_dirs: dict[str, int] = {}
 
-    def _classify(d: Path) -> str:
-        """'gc' | 'hplc' | 'other' for a .D folder."""
-        if not (d.is_dir() and d.name.endswith(".D")):
-            return "other"
-        return "gc" if (d / "data.ms").exists() else "hplc"
+    def _count_subtree(directory: Path) -> tuple[int, int]:
+        """Return (hplc_count, gc_count) of all .D folders anywhere under directory."""
+        hplc_n = gc_n = 0
+        try:
+            for item in sorted(directory.iterdir()):
+                if not item.is_dir() or item.name.startswith("."):
+                    continue
+                if item.name.endswith(".D"):
+                    if (item / "data.ms").exists():
+                        gc_n += 1
+                    else:
+                        hplc_n += 1
+                else:
+                    h, g = _count_subtree(item)
+                    hplc_n += h
+                    gc_n += g
+        except PermissionError:
+            pass
+        return hplc_n, gc_n
 
-    def _scan_dir(directory: Path, label: str) -> None:
-        hplc_n = sum(1 for p in directory.iterdir() if _classify(p) == "hplc")
-        gc_n = sum(1 for p in directory.iterdir() if _classify(p) == "gc")
-        if hplc_n:
-            hplc_dirs[label] = hplc_n
-        if gc_n:
-            gc_dirs[label] = gc_n
-
+    # Direct .D children at root
     try:
-        _scan_dir(folder, "(root)")
+        for item in sorted(folder.iterdir()):
+            if item.is_dir() and item.name.endswith(".D") and not item.name.startswith("."):
+                if (item / "data.ms").exists():
+                    gc_dirs["(root)"] = gc_dirs.get("(root)", 0) + 1
+                else:
+                    hplc_dirs["(root)"] = hplc_dirs.get("(root)", 0) + 1
     except PermissionError:
         pass
 
-    for item in sorted(folder.iterdir()):
-        if not item.is_dir() or item.name.startswith(".") or item.name.endswith(".D"):
-            continue
-        try:
-            _scan_dir(item, item.name)
-        except PermissionError:
-            pass
+    # First-level subfolders — recurse to any depth
+    try:
+        for item in sorted(folder.iterdir()):
+            if not item.is_dir() or item.name.startswith(".") or item.name.endswith(".D"):
+                continue
+            h, g = _count_subtree(item)
+            if h:
+                hplc_dirs[item.name] = h
+            if g:
+                gc_dirs[item.name] = g
+    except PermissionError:
+        pass
 
     return {"hplc_dirs": hplc_dirs, "gc_dirs": gc_dirs}
 

@@ -98,16 +98,20 @@ def _is_gc_d_folder(path: Path) -> bool:
 
 
 def find_gc_injections(data_root: Path) -> list[GCInjection]:
-    """Find GC-MS ``.D`` folders (those containing ``data.ms``).
+    """Find GC-MS ``.D`` folders (those containing ``data.ms``) anywhere under data_root.
 
-    Mirrors the HPLC discovery: a flat layout (``.D`` folders directly under
-    ``data_root``) or one level of run subfolders (``data_root/<run>/*.D``).
+    Fully recursive — works regardless of nesting depth.  The ``experiment_name``
+    is set to the first-level subdirectory name below data_root.
     """
     data_root = Path(data_root)
     injections: list[GCInjection] = []
 
-    def scan(directory: Path, parent_name: str = "") -> None:
-        for item in sorted(directory.iterdir()):
+    def scan(directory: Path, batch_name: str = "") -> None:
+        try:
+            entries = sorted(directory.iterdir())
+        except PermissionError:
+            return
+        for item in entries:
             if not item.is_dir():
                 continue
             if _is_gc_d_folder(item):
@@ -116,12 +120,11 @@ def find_gc_injections(data_root: Path) -> list[GCInjection]:
                         folder_path=item,
                         folder_name=item.name,
                         sample_name=parse_gc_sample_name(item),
-                        experiment_name=parent_name or "Main",
+                        experiment_name=batch_name or "Main",
                     )
                 )
-            elif parent_name == "" and not item.name.endswith(".D"):
-                # Recurse a single level into run subfolders only.
-                scan(item, item.name)
+            elif not item.name.endswith(".D") and not item.name.startswith("."):
+                scan(item, batch_name or item.name)
 
     scan(data_root)
     injections.sort(key=lambda inj: (inj.experiment_name, inj.folder_name))

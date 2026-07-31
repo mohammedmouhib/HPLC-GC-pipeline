@@ -57,19 +57,24 @@ def parse_sample_name_from_xml(xml_path: Path) -> str:
 
 
 def find_injection_folders(experiment_dir: Path) -> list[Injection]:
-    """Find all .D folders containing a sample.xml.
+    """Find all .D folders containing a sample.xml anywhere under experiment_dir.
 
-    Supports a flat layout (``.D`` folders directly under ``experiment_dir``)
-    and one level of run subfolders (``experiment_dir/<run>/*.D``).
+    Fully recursive — works regardless of how many levels of subfolders the
+    instrument software created.  The ``experiment_name`` is set to the name of
+    the first non-root subdirectory entered (e.g. ``"HPLC_data_etac"`` when
+    data lives at ``<root>/HPLC_data/HPLC_data_etac/*.D``).
     """
     experiment_dir = Path(experiment_dir)
     injections: list[Injection] = []
 
-    def scan(directory: Path, parent_name: str = "") -> None:
-        for item in sorted(directory.iterdir()):
+    def scan(directory: Path, batch_name: str = "") -> None:
+        try:
+            entries = sorted(directory.iterdir())
+        except PermissionError:
+            return
+        for item in entries:
             if not item.is_dir():
                 continue
-
             if item.name.endswith(".D"):
                 xml_file = _find_sample_xml(item)
                 if xml_file is None:
@@ -81,13 +86,12 @@ def find_injection_folders(experiment_dir: Path) -> list[Injection]:
                         folder_name=item.name,
                         xml_file=xml_file,
                         sample_name=parse_sample_name_from_xml(xml_file),
-                        experiment_name=parent_name or "Main",
+                        experiment_name=batch_name or "Main",
                     )
                 )
-            elif parent_name == "":
-                # Only recurse one level, from the top, to avoid scanning the
-                # whole disk. Method/result folders end in .M/.B and are ignored.
-                scan(item, item.name)
+            elif not item.name.startswith("."):
+                # Recurse; lock in batch_name at the first level below root.
+                scan(item, batch_name or item.name)
 
     scan(experiment_dir)
     injections.sort(key=lambda inj: (inj.experiment_name, inj.folder_name))

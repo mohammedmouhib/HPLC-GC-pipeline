@@ -19,10 +19,11 @@ What must be filled in manually after init (flagged in the written files):
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 
@@ -40,37 +41,42 @@ def _is_hplc_d_folder(path: Path) -> bool:
             and not (path / "data.ms").exists())
 
 
-def detect_hplc_data_dir(experiment_dir: Path) -> Optional[Union[str, list[str]]]:
-    """Return the HPLC data subfolder(s), or None when at the experiment root.
+def detect_hplc_data_dir(experiment_dir: Path) -> Optional[str]:
+    """Return the overarching HPLC data subfolder, or None when at the experiment root.
 
-    * ``None``        — HPLC .D folders are directly in ``experiment_dir``.
-    * ``str``         — a single subfolder holds all HPLC data.
-    * ``list[str]``   — HPLC data spans multiple subfolders (e.g. two batches).
+    Walks the experiment tree recursively to find all directories that directly
+    contain HPLC ``.D`` folders, then returns their lowest common ancestor
+    relative to ``experiment_dir``.  Returns None when the LCA is the experiment
+    root itself (i.e. ``.D`` files live directly there).
     """
     experiment_dir = Path(experiment_dir)
 
-    hplc_at_root = any(
-        _is_hplc_d_folder(p) for p in experiment_dir.iterdir() if p.is_dir()
-    )
-    if hplc_at_root:
-        return None
+    hplc_parents: list[Path] = []
 
-    hplc_subdirs: dict[str, int] = {}
-    for item in sorted(experiment_dir.iterdir()):
-        if not item.is_dir() or item.name.startswith(".") or item.name.endswith(".D"):
-            continue
+    def walk(directory: Path) -> None:
         try:
-            count = sum(1 for p in item.iterdir() if p.is_dir() and _is_hplc_d_folder(p))
+            entries = sorted(directory.iterdir())
         except PermissionError:
-            continue
-        if count:
-            hplc_subdirs[item.name] = count
+            return
+        has_hplc = False
+        for item in entries:
+            if not item.is_dir():
+                continue
+            if _is_hplc_d_folder(item):
+                has_hplc = True
+            elif not item.name.endswith(".D") and not item.name.startswith("."):
+                walk(item)
+        if has_hplc:
+            hplc_parents.append(directory)
 
-    if not hplc_subdirs:
+    walk(experiment_dir)
+
+    if not hplc_parents:
         return None
-    if len(hplc_subdirs) == 1:
-        return next(iter(hplc_subdirs))
-    return sorted(hplc_subdirs.keys())
+    common = Path(os.path.commonpath([str(p) for p in hplc_parents]))
+    if common == experiment_dir:
+        return None
+    return str(common.relative_to(experiment_dir))
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +363,8 @@ class InitResult:
     sample_pattern: str
     monitored_mz: list[float]
     peaks: list[DiscoveredPeak]
-    hplc_data_dir: Optional[Union[str, list[str]]] = None  # auto-detected subfolder(s)
+    hplc_data_dir: Optional[str] = None   # overarching HPLC subfolder (LCA)
+    gc_data_dir: Optional[str] = None    # overarching GC subfolder (LCA)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -399,6 +406,7 @@ def run_gc_init(
             monitored_mz=[],
             peaks=[],
             hplc_data_dir=hplc_data_dir,
+            gc_data_dir=None,
             warnings=warnings,
         )
 
@@ -419,6 +427,7 @@ def run_gc_init(
             monitored_mz=[],
             peaks=[],
             hplc_data_dir=hplc_data_dir,
+            gc_data_dir=None,
             warnings=warnings,
         )
     print(f"  Found {len(all_injections)} injection(s)")
@@ -489,6 +498,13 @@ def run_gc_init(
             "detectable signal."
         )
 
+    gc_parents = {inj.folder_path.parent for inj in all_injections}
+    gc_common = Path(os.path.commonpath([str(p) for p in gc_parents]))
+    gc_data_dir: Optional[str] = (
+        None if gc_common == experiment_dir
+        else str(gc_common.relative_to(experiment_dir))
+    )
+
     return InitResult(
         experiment_dir=experiment_dir,
         all_injections=all_injections,
@@ -499,6 +515,7 @@ def run_gc_init(
         monitored_mz=monitored_mz,
         peaks=peaks,
         hplc_data_dir=hplc_data_dir,
+        gc_data_dir=gc_data_dir,
         warnings=warnings,
     )
 
@@ -548,9 +565,6 @@ def write_hplc_config(
         dd = result.hplc_data_dir
         if dd is None:
             data_dir_line = "  data_dir: null  # .D files are directly in the experiment folder"
-        elif isinstance(dd, list):
-            data_dir_line = "  data_dir:  # auto-detected: HPLC data in multiple subfolders\n" + \
-                            "\n".join(f"    - {d}" for d in dd)
         else:
             data_dir_line = f"  data_dir: {dd}  # auto-detected"
         lines += [
@@ -583,12 +597,16 @@ def write_hplc_config(
         n_match = _count_matches(
             [i.sample_name for i in result.sample_injections], result.sample_pattern
         )
+        gc_dir = result.gc_data_dir
+        gc_data_dir_line = (
+            f"  data_dir: {gc_dir}  # auto-detected"
+            if gc_dir else
+            "  data_dir: null  # .D files are directly in the experiment folder"
+        )
         lines += [
             "# -- GC-MS modality ------------------------------------------------------",
             "gc:",
-            "  # data_dir not set: the pipeline scans the experiment folder and its",
-            "  # one-level subfolders.  This finds both the sample .D files and any",
-            "  # standard .D files in a sibling subfolder (e.g. GC_standard_injections/).",
+            gc_data_dir_line,
             "  compounds_file: gc_compounds.csv  # rename Peak_N to real compound names",
             "",
             "  processing:",
@@ -653,12 +671,9 @@ def print_summary(
     print("INIT SUMMARY")
     print(sep)
     if result.hplc_data_dir:
-        dd = result.hplc_data_dir
-        if isinstance(dd, list):
-            for d in dd:
-                print(f"  HPLC data dir    : {d}/")
-        else:
-            print(f"  HPLC data dir    : {dd}/")
+        print(f"  HPLC data dir    : {result.hplc_data_dir}/")
+    if result.gc_data_dir:
+        print(f"  GC data dir      : {result.gc_data_dir}/")
     if result.all_injections:
         print(f"  GC injections    : {len(result.all_injections)}")
         print(f"    Standards      : {len(result.standard_injections)}")
