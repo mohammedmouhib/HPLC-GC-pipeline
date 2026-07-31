@@ -168,7 +168,7 @@ def _deconvolve(chrom, decon_cfg: DeconvolutionConfig) -> None:
     except Exception:
         pass
 
-    for model in decon_cfg.models:
+    for model in (decon_cfg.models or []):
         try:
             chrom.deconvolve_peaks(
                 model=model,
