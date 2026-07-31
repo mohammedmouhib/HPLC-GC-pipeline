@@ -23,6 +23,37 @@ analysis_dir = st.session_state.get("w_analysis_dir", "analysis")
 
 _ro = not st.session_state.get("edit_mode", True)
 
+# ── Sync bar ──────────────────────────────────────────────────────────────
+with st.container(border=True):
+    _sl, _sr, _ss = st.columns([2, 2, 4])
+    if _sl.button(
+        "Read from config", icon=":material/upload_file:",
+        help="Reload all settings from `hplc_config.yaml` and CSV files on disk. "
+             "Discards any unsaved form changes.",
+    ):
+        load_into_state(exp)
+        st.rerun()
+    if _sr.button(
+        "Write to config", icon=":material/save:", type="primary", disabled=_ro,
+        help="Save current form values to `hplc_config.yaml` and CSV files on disk.",
+        key="sync_write_top",
+    ):
+        _cdf = st.session_state.get("ed_compounds", st.session_state.compounds_df)
+        _sdf = st.session_state.get("ed_standard", st.session_state.standard_df)
+        _gdf = st.session_state.get("ed_gc_compounds", st.session_state.gc_compounds_df)
+        _strains = (st.session_state.get("w_strains_ms")
+                    or _csv_list(st.session_state.get("w_strains_txt", "")))
+        _btp_raw = (st.session_state.get("w_bartp_ms")
+                    or _csv_list(st.session_state.get("w_bartp_txt", "")))
+        _btp = [int(x) for x in (_btp_raw or []) if str(x).strip().isdigit()] or None
+        ok, msg = apply_changes(exp, _cdf, _sdf, _gdf, _strains, _btp)
+        (st.success if ok else st.error)(msg)
+    with _ss:
+        if st.session_state.get("dirty"):
+            st.caption(":material/edit: Unsaved changes in form")
+        else:
+            st.caption(":material/check: Form matches config on disk")
+
 if _ro:
     st.info(
         "View only — toggle **Edit mode** in the sidebar to make changes.",
@@ -131,129 +162,152 @@ with st.container(border=True):
         )
 
 # ── HPLC modality ─────────────────────────────────────────────────────────
-with st.expander(
-    "HPLC settings" + (" — not active" if st.session_state.w_gc_enabled and not any(
-        k in st.session_state.get("doc", {}) for k in ("processing", "analysis", "hplc")
-    ) else ""),
-    icon=":material/water_drop:",
-    expanded=not st.session_state.w_gc_enabled,
-):
-    st.caption("Configure these when your experiment includes HPLC / DAD data.")
-    with st.container(border=True):
-        st.subheader("Processing · Stage 1")
-        c1, c2, c3 = st.columns(3)
-        c1.number_input("Detection wavelength (nm)", key="w_wavelength", step=1, on_change=_mark_dirty, disabled=_ro)
-        c2.text_input(
-            "Blank injection (.D folder name)", key="w_blank",
-            placeholder="e.g. 091-0202.D (blank = none)", on_change=_mark_dirty, disabled=_ro,
-        )
-        c3.text_input(
-            "Data subfolder", key="w_datadir",
-            placeholder="e.g. Data (blank = experiment root)", on_change=_mark_dirty, disabled=_ro,
-        )
-        c4, c5, c6 = st.columns(3)
-        c4.toggle("Peak deconvolution", key="w_deconv", on_change=_mark_dirty, disabled=_ro,
-                  help="If disabled, peaks are integrated by trapezoid fallback only.")
-        c5.number_input("Min R² to accept fit", key="w_minr2", step=0.01, format="%.2f", on_change=_mark_dirty, disabled=_ro)
-        c6.number_input("Max components per peak", key="w_maxcomps", step=1, on_change=_mark_dirty, disabled=_ro)
+with st.container(border=True):
+    hplc_hdr, hplc_badge = st.columns([5, 1], vertical_alignment="center")
+    with hplc_hdr:
+        st.subheader("HPLC modality")
+    with hplc_badge:
+        if st.session_state.get("w_hplc_enabled", True):
+            st.badge("Enabled", color="green")
+        else:
+            st.badge("Disabled", color="gray")
 
-    with st.container(border=True):
-        st.subheader("Analysis · Stage 2")
-        a1, a2, a3, a4 = st.columns(4)
-        a1.toggle("Exclude peaks outside RT windows", key="w_excl", on_change=_mark_dirty, disabled=_ro)
-        a2.number_input("CV% warning threshold", key="w_cv", step=1.0, on_change=_mark_dirty, disabled=_ro)
-        a3.toggle("Clamp negative conc. to 0", key="w_clamp", on_change=_mark_dirty, disabled=_ro)
-        a4.toggle("Zero area → 0 µM", key="w_zero", on_change=_mark_dirty, disabled=_ro,
-                  help="Report zero-area compounds as 0 µM rather than the calibration intercept.")
-        st.text_input(
-            "Sample-name pattern", key="w_pattern", on_change=_mark_dirty, disabled=_ro,
-            help='Named groups: time, strain, replicate. Default matches "24, s1, A".',
-        )
+    st.toggle(
+        "Enable HPLC processing",
+        key="w_hplc_enabled",
+        on_change=_mark_dirty,
+        disabled=_ro,
+        help="Adds `processing:` and `analysis:` blocks to hplc_config.yaml. "
+             "Enable when your experiment includes HPLC / DAD .D injections.",
+    )
 
-        st.divider()
-        st.markdown("**Calibration**")
-        b1, b2, b3 = st.columns(3)
-        b1.segmented_control(
-            "Standard source", ["csv", "injections", "both"],
-            key="w_cal_source", on_change=_mark_dirty, disabled=_ro,
-            help="csv = read standard.csv. injections = auto-detect standard .D folders by name "
-                 "(pattern below). both = pool both sources for one regression.",
-        )
-        b2.number_input(
-            "Sample dilution factor", key="w_dilution",
-            min_value=0.0, step=1.0, on_change=_mark_dirty, disabled=_ro,
-            help="Multiply sample concentrations by this to recover the undiluted value. "
-                 "1:10 dilution → 10. Standards are never scaled.",
-        )
-        b3.toggle(
-            "Force fit through origin",
-            key="w_force_origin", on_change=_mark_dirty, disabled=_ro,
-            help="Fit conc = slope·area (no intercept). Removes artefact from a negative intercept.",
-        )
-        if st.session_state.get("w_cal_source", "csv") in ("injections", "both"):
+    if st.session_state.get("w_hplc_enabled", True):
+        with st.container(border=True):
+            st.subheader("Processing · Stage 1")
+            c1, c2, c3 = st.columns(3)
+            c1.number_input("Detection wavelength (nm)", key="w_wavelength", step=1, on_change=_mark_dirty, disabled=_ro)
+            c2.text_input(
+                "Blank injection (.D folder name)", key="w_blank",
+                placeholder="e.g. 091-0202.D (blank = none)", on_change=_mark_dirty, disabled=_ro,
+            )
+            c3.text_input(
+                "Data subfolder(s)", key="w_datadir",
+                placeholder="e.g. HPLC_data, HPLC_data_part_2  (blank = root)",
+                help="Subfolder(s) containing HPLC .D files. "
+                     "Comma-separate multiple paths when data spans more than one folder "
+                     "(e.g. two run batches). Leave blank to scan the experiment root.",
+                on_change=_mark_dirty, disabled=_ro,
+            )
+            c4, c5, c6 = st.columns(3)
+            c4.toggle("Peak deconvolution", key="w_deconv", on_change=_mark_dirty, disabled=_ro,
+                      help="If disabled, peaks are integrated by trapezoid fallback only.")
+            c5.number_input("Min R² to accept fit", key="w_minr2", step=0.01, format="%.2f", on_change=_mark_dirty, disabled=_ro)
+            c6.number_input("Max components per peak", key="w_maxcomps", step=1, on_change=_mark_dirty, disabled=_ro)
+
+        with st.container(border=True):
+            st.subheader("Analysis · Stage 2")
+            a1, a2, a3, a4 = st.columns(4)
+            a1.toggle("Exclude peaks outside RT windows", key="w_excl", on_change=_mark_dirty, disabled=_ro)
+            a2.number_input("CV% warning threshold", key="w_cv", step=1.0, on_change=_mark_dirty, disabled=_ro)
+            a3.toggle("Clamp negative conc. to 0", key="w_clamp", on_change=_mark_dirty, disabled=_ro)
+            a4.toggle("Zero area → 0 µM", key="w_zero", on_change=_mark_dirty, disabled=_ro,
+                      help="Report zero-area compounds as 0 µM rather than the calibration intercept.")
             st.text_input(
-                "Standard-name pattern", key="w_std_pattern", on_change=_mark_dirty, disabled=_ro,
-                help="Regex with named groups (conc, unit, compound) matching standard injection "
-                     "names. Example: '250uM_pCA_hexane' → conc=250, unit=uM, compound=pCA.",
+                "Sample-name pattern", key="w_pattern", on_change=_mark_dirty, disabled=_ro,
+                help='Named groups: time, strain, replicate. Default matches "24, s1, A".',
             )
 
-    with st.container(border=True):
-        st.subheader("compounds.csv — retention-time windows")
+            st.divider()
+            st.markdown("**Calibration**")
+            b1, b2, b3 = st.columns(3)
+            b1.segmented_control(
+                "Standard source", ["csv", "injections", "both"],
+                key="w_cal_source", on_change=_mark_dirty, disabled=_ro,
+                help="csv = read standard.csv. injections = auto-detect standard .D folders by name "
+                     "(pattern below). both = pool both sources for one regression.",
+            )
+            b2.number_input(
+                "Sample dilution factor", key="w_dilution",
+                min_value=0.0, step=1.0, on_change=_mark_dirty, disabled=_ro,
+                help="Multiply sample concentrations by this to recover the undiluted value. "
+                     "1:10 dilution → 10. Standards are never scaled.",
+            )
+            b3.toggle(
+                "Force fit through origin",
+                key="w_force_origin", on_change=_mark_dirty, disabled=_ro,
+                help="Fit conc = slope·area (no intercept). Removes artefact from a negative intercept.",
+            )
+            if st.session_state.get("w_cal_source", "csv") in ("injections", "both"):
+                st.text_input(
+                    "Standard-name pattern", key="w_std_pattern", on_change=_mark_dirty, disabled=_ro,
+                    help="Regex with named groups (conc, unit, compound) matching standard injection "
+                         "names. Example: '250uM_pCA_hexane' → conc=250, unit=uM, compound=pCA.",
+                )
+
+        with st.container(border=True):
+            st.subheader("compounds.csv — retention-time windows")
+            st.caption(
+                "Add a `calibrate_as` value to borrow another compound's calibration curve "
+                "(useful when two compounds share a chromophore or response factor)."
+            )
+            if st.session_state.get("compounds_seeded"):
+                st.caption("No compounds file yet — showing example values; apply to save.")
+            compounds_df = st.data_editor(
+                st.session_state.compounds_df,
+                num_rows="fixed" if _ro else "dynamic",
+                disabled=_ro,
+                key="ed_compounds", on_change=_mark_dirty,
+            )
+
+            st.subheader("standard.csv — calibration points")
+            if st.session_state.get("standard_seeded"):
+                st.caption("No standard file yet — showing example values; apply to save.")
+
+            # Import-from-injections helper
+            _peak_csv = exp / st.session_state.get("w_results_dir", "results") / "peak_results.csv"
+            _cal_source = st.session_state.get("w_cal_source", "csv")
+            if not _ro and _peak_csv.exists() and _cal_source in ("injections", "both"):
+                if st.button(
+                    "Import calibration points from injections",
+                    icon=":material/download:",
+                    help="Detect standard .D injections in peak_results.csv and append new rows to the "
+                         "table below. Uses the standard-name pattern and RT windows from compounds.csv.",
+                ):
+                    try:
+                        from hplc_gc_pipeline.calibration import _load_from_injections
+                        _cdf = st.session_state.get("ed_compounds") or st.session_state.compounds_df
+                        _pattern = st.session_state.get("w_std_pattern", "")
+                        _inj = _load_from_injections(_peak_csv, _cdf, _pattern)
+                        if _inj.empty:
+                            st.warning("No matching standard injections found with the current pattern.",
+                                       icon=":material/info:")
+                        else:
+                            _inj = _inj.drop(columns=["_source"], errors="ignore")
+                            _existing = st.session_state.get("ed_standard") or st.session_state.standard_df
+                            merged = pd.concat([_existing, _inj], ignore_index=True).drop_duplicates(
+                                subset=["Compound", "concentration", "Area_Integral"]
+                            )
+                            st.session_state.standard_df = merged
+                            st.session_state.pop("ed_standard", None)
+                            _mark_dirty()
+                            st.toast(f"Imported {len(_inj)} calibration point(s) from injections.",
+                                     icon=":material/check:")
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"Import failed: {exc}")
+
+            standard_df = st.data_editor(
+                st.session_state.standard_df,
+                num_rows="fixed" if _ro else "dynamic",
+                disabled=_ro,
+                key="ed_standard", on_change=_mark_dirty,
+            )
+    else:
+        compounds_df = st.session_state.compounds_df
+        standard_df = st.session_state.standard_df
         st.caption(
-            "Add a `calibrate_as` value to borrow another compound's calibration curve "
-            "(useful when two compounds share a chromophore or response factor)."
-        )
-        if st.session_state.get("compounds_seeded"):
-            st.caption("No compounds file yet — showing example values; apply to save.")
-        compounds_df = st.data_editor(
-            st.session_state.compounds_df,
-            num_rows="fixed" if _ro else "dynamic",
-            disabled=_ro,
-            key="ed_compounds", on_change=_mark_dirty,
-        )
-
-        st.subheader("standard.csv — calibration points")
-        if st.session_state.get("standard_seeded"):
-            st.caption("No standard file yet — showing example values; apply to save.")
-
-        # Import-from-injections helper
-        _peak_csv = exp / st.session_state.get("w_results_dir", "results") / "peak_results.csv"
-        _cal_source = st.session_state.get("w_cal_source", "csv")
-        if not _ro and _peak_csv.exists() and _cal_source in ("injections", "both"):
-            if st.button(
-                "Import calibration points from injections",
-                icon=":material/download:",
-                help="Detect standard .D injections in peak_results.csv and append new rows to the "
-                     "table below. Uses the standard-name pattern and RT windows from compounds.csv.",
-            ):
-                try:
-                    from hplc_gc_pipeline.calibration import _load_from_injections
-                    _cdf = st.session_state.get("ed_compounds") or st.session_state.compounds_df
-                    _pattern = st.session_state.get("w_std_pattern", "")
-                    _inj = _load_from_injections(_peak_csv, _cdf, _pattern)
-                    if _inj.empty:
-                        st.warning("No matching standard injections found with the current pattern.",
-                                   icon=":material/info:")
-                    else:
-                        _inj = _inj.drop(columns=["_source"], errors="ignore")
-                        _existing = st.session_state.get("ed_standard") or st.session_state.standard_df
-                        merged = pd.concat([_existing, _inj], ignore_index=True).drop_duplicates(
-                            subset=["Compound", "concentration", "Area_Integral"]
-                        )
-                        st.session_state.standard_df = merged
-                        st.session_state.pop("ed_standard", None)
-                        _mark_dirty()
-                        st.toast(f"Imported {len(_inj)} calibration point(s) from injections.",
-                                 icon=":material/check:")
-                        st.rerun()
-                except Exception as exc:
-                    st.error(f"Import failed: {exc}")
-
-        standard_df = st.data_editor(
-            st.session_state.standard_df,
-            num_rows="fixed" if _ro else "dynamic",
-            disabled=_ro,
-            key="ed_standard", on_change=_mark_dirty,
+            "Enable to process HPLC / DAD `.D` data. "
+            "When both modalities are active, a combined dashboard is written to `combined_analysis/`."
         )
 
 # ── Plots ──────────────────────────────────────────────────────────────────
@@ -315,7 +369,7 @@ with st.expander("Advanced — peak detection, deconvolution models, palette, fi
 
 st.space("small")
 if not _ro:
-    if st.button("Apply changes", type="primary", icon=":material/save:"):
+    if st.button("Write to config", type="primary", icon=":material/save:", key="sync_write_bottom"):
         ok, msg = apply_changes(exp, compounds_df, standard_df, gc_compounds_df,
                                 plot_strains, bar_time_points)
         (st.success if ok else st.error)(msg)

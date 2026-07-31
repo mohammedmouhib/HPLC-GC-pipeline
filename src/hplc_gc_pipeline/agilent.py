@@ -103,7 +103,31 @@ def _find_sample_xml(d_folder: Path) -> Optional[Path]:
 
 
 def load_chromatogram(d_folder: Path, wavelength: int) -> Chromatogram:
-    """Load a .D folder via MOCCA2 and extract a single wavelength."""
-    chrom = Chromatogram(str(d_folder))
+    """Load a .D folder via MOCCA2 and extract a single wavelength.
+
+    MOCCA2's built-in chemstation parser expects a ``DAD1.CSV`` export.
+    When the folder instead has a ``DAD1.UV`` binary (Chemstation 6.x /
+    OpenLAB without CSV export), rainbow reads it and we hand a ``Data2D``
+    object straight to ``Chromatogram`` to avoid the CSV lookup entirely.
+    """
+    try:
+        chrom = Chromatogram(str(d_folder))
+    except FileNotFoundError:
+        chrom = _load_chromatogram_rainbow(d_folder)
     chrom.extract_wavelength(wavelength, wavelength, inplace=True)
     return chrom
+
+
+def _load_chromatogram_rainbow(d_folder: Path) -> Chromatogram:
+    """Fallback: read the Chemstation binary DAD1.UV via rainbow."""
+    import numpy as np
+    import rainbow
+    from mocca2.classes import Data2D
+
+    rb = rainbow.read(str(d_folder))
+    uv = rb.get_file("DAD1.UV")
+    time_min = np.asarray(uv.xlabels, dtype=float)
+    wavelengths = np.asarray(uv.ylabels, dtype=float)
+    raw = np.asarray(uv.data, dtype=float)          # (n_time, n_wavelength)
+    data2d = Data2D(time=time_min, wavelength=wavelengths, data=raw.T)
+    return Chromatogram(data2d, name=d_folder.stem)

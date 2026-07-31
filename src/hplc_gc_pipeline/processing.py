@@ -40,18 +40,36 @@ class Dataset:
 # Loading
 # ---------------------------------------------------------------------------
 
-def load_dataset(experiment_dir: Path, cfg: ProcessingConfig) -> Dataset:
-    """Discover and load every chromatogram under ``experiment_dir``."""
+def load_dataset(experiment_dir: "Path | list[Path]", cfg: ProcessingConfig) -> Dataset:
+    """Discover and load every chromatogram under ``experiment_dir``.
+
+    ``experiment_dir`` may be a single :class:`Path` or a list of paths
+    (e.g. when HPLC data spans multiple subfolders).  Injections from all
+    directories are combined into a single :class:`Dataset`.
+    """
+    dirs: list[Path] = (
+        [experiment_dir] if isinstance(experiment_dir, Path) else list(experiment_dir)
+    )
+
     print("=" * 70)
     print("LOADING DATA")
     print("=" * 70)
-    print(f"Experiment directory : {experiment_dir}")
+    if len(dirs) == 1:
+        print(f"Experiment directory : {dirs[0]}")
+    else:
+        for i, d in enumerate(dirs, 1):
+            print(f"Experiment directory {i}: {d}")
     print(f"Blank folder         : {cfg.blank_folder_name or '(none)'}")
     print(f"Wavelength           : {cfg.wavelength_nm} nm\n")
 
-    injections = find_injection_folders(experiment_dir)
+    injections = []
+    for d in dirs:
+        injections.extend(find_injection_folders(d))
     if not injections:
-        raise ValueError(f"No valid .D folders with sample.xml found in {experiment_dir}")
+        raise ValueError(
+            f"No valid .D folders with sample.xml found in "
+            f"{', '.join(str(d) for d in dirs)}"
+        )
 
     print(f"Found {len(injections)} .D folders. Loading chromatograms:")
 

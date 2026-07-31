@@ -1,19 +1,20 @@
 """
-hplc init: auto-discover a GC-MS experiment folder and write starter config files.
+hplc init: auto-discover an experiment folder and write starter config files.
 
 What is auto-detected:
-  - Monitored m/z values (SIM header of any injection)
-  - Which injections are standards (names match standard_pattern)
+  - Whether HPLC and/or GC-MS data are present, and in which subfolders
+  - Monitored m/z values (SIM header of any GC injection)
+  - Which injections are GC standards (names match standard_pattern)
   - Peak RT windows (from averaged EIC across standard injections)
   - Quantifier m/z per peak (highest-signal ion at that RT)
   - Qualifier ion ratios (area ratios averaged across standards)
-  - Sample name convention (comma-separated vs underscore)
+  - GC sample name convention (comma-separated vs underscore)
 
 What must be filled in manually after init (flagged in the written files):
-  - Compound names (written as Peak_1, Peak_2, ...)
+  - GC compound names (written as Peak_1, Peak_2, ...)
   - calibrate_as (cross-compound calibration; requires chemistry knowledge)
   - dilution_factor (lab protocol, not encoded in data files)
-  - RT window margins (widen if peaks shift between injections)
+  - HPLC compound RT windows and calibration data
 """
 
 from __future__ import annotations
@@ -21,13 +22,55 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
 from .gc_agilent import GCInjection, find_gc_injections, load_gc_traces, GCTraces
 from .gc_calibration import parse_standard_name
 from .gc_processing import als_baseline, GCBaselineConfig, GCPeakDetectionConfig, integrate_peak
+
+# ---------------------------------------------------------------------------
+# HPLC folder detection
+# ---------------------------------------------------------------------------
+
+def _is_hplc_d_folder(path: Path) -> bool:
+    """A .D folder without ``data.ms`` is an HPLC (DAD) injection, not GC-MS."""
+    return (path.is_dir() and path.name.endswith(".D")
+            and not (path / "data.ms").exists())
+
+
+def detect_hplc_data_dir(experiment_dir: Path) -> Optional[Union[str, list[str]]]:
+    """Return the HPLC data subfolder(s), or None when at the experiment root.
+
+    * ``None``        — HPLC .D folders are directly in ``experiment_dir``.
+    * ``str``         — a single subfolder holds all HPLC data.
+    * ``list[str]``   — HPLC data spans multiple subfolders (e.g. two batches).
+    """
+    experiment_dir = Path(experiment_dir)
+
+    hplc_at_root = any(
+        _is_hplc_d_folder(p) for p in experiment_dir.iterdir() if p.is_dir()
+    )
+    if hplc_at_root:
+        return None
+
+    hplc_subdirs: dict[str, int] = {}
+    for item in sorted(experiment_dir.iterdir()):
+        if not item.is_dir() or item.name.startswith(".") or item.name.endswith(".D"):
+            continue
+        try:
+            count = sum(1 for p in item.iterdir() if p.is_dir() and _is_hplc_d_folder(p))
+        except PermissionError:
+            continue
+        if count:
+            hplc_subdirs[item.name] = count
+
+    if not hplc_subdirs:
+        return None
+    if len(hplc_subdirs) == 1:
+        return next(iter(hplc_subdirs))
+    return sorted(hplc_subdirs.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +357,7 @@ class InitResult:
     sample_pattern: str
     monitored_mz: list[float]
     peaks: list[DiscoveredPeak]
+    hplc_data_dir: Optional[Union[str, list[str]]] = None  # auto-detected subfolder(s)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -323,13 +367,60 @@ def run_gc_init(
     rt_scan_min: float = 1.5,
     rt_scan_max: float = 30.0,
     rt_margin: float = 0.08,
+    include_gc: bool = True,
 ) -> InitResult:
+    """Scan ``experiment_dir`` and build an :class:`InitResult`.
+
+    When ``include_gc`` is False, skips GC injection discovery and peak
+    detection (for HPLC-only experiments). ``hplc_data_dir`` is always
+    detected regardless of ``include_gc``.
+    """
     experiment_dir = Path(experiment_dir).expanduser().resolve()
+
+    hplc_data_dir = detect_hplc_data_dir(experiment_dir)
+
+    warnings: list[str] = []
+    all_injections: list[GCInjection] = []
+    standard_injections: list[GCInjection] = []
+    sample_injections: list[GCInjection] = []
+    convention = "comma"
+    pattern = _COMMA_PATTERN
+    monitored_mz: list[float] = []
+    peaks: list[DiscoveredPeak] = []
+
+    if not include_gc:
+        return InitResult(
+            experiment_dir=experiment_dir,
+            all_injections=[],
+            standard_injections=[],
+            sample_injections=[],
+            sample_convention=convention,
+            sample_pattern=pattern,
+            monitored_mz=[],
+            peaks=[],
+            hplc_data_dir=hplc_data_dir,
+            warnings=warnings,
+        )
 
     print(f"\nScanning {experiment_dir} for GC-MS .D folders...")
     all_injections = find_gc_injections(experiment_dir)
     if not all_injections:
-        raise ValueError(f"No GC-MS .D folders (containing data.ms) found in {experiment_dir}")
+        warnings.append(
+            f"No GC-MS .D folders (containing data.ms) found in {experiment_dir}. "
+            "gc_compounds.csv will be empty."
+        )
+        return InitResult(
+            experiment_dir=experiment_dir,
+            all_injections=[],
+            standard_injections=[],
+            sample_injections=[],
+            sample_convention=convention,
+            sample_pattern=pattern,
+            monitored_mz=[],
+            peaks=[],
+            hplc_data_dir=hplc_data_dir,
+            warnings=warnings,
+        )
     print(f"  Found {len(all_injections)} injection(s)")
 
     # Partition into standards vs samples
@@ -344,7 +435,6 @@ def run_gc_init(
     print(f"  Standards (matching standard_pattern): {len(standard_injections)}")
     print(f"  Samples (remaining):                   {len(sample_injections)}")
 
-    warnings: list[str] = []
     if not standard_injections:
         warnings.append(
             "No injections matched the standard_pattern. Peaks will be detected from ALL "
@@ -362,7 +452,6 @@ def run_gc_init(
         )
 
     # Read monitored m/z from any injection
-    monitored_mz: list[float] = []
     probe_inj = (standard_injections or sample_injections)[0]
     try:
         probe_traces = load_gc_traces(probe_inj)
@@ -409,6 +498,7 @@ def run_gc_init(
         sample_pattern=pattern,
         monitored_mz=monitored_mz,
         peaks=peaks,
+        hplc_data_dir=hplc_data_dir,
         warnings=warnings,
     )
 
@@ -431,63 +521,116 @@ def write_gc_compounds(result: InitResult, output_path: Path) -> None:
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_hplc_config(result: InitResult, output_path: Path, std_pattern: str) -> None:
-    """Write a draft hplc_config.yaml annotated with auto-detected values."""
+def write_hplc_config(
+    result: InitResult,
+    output_path: Path,
+    std_pattern: str,
+    *,
+    include_hplc: bool = True,
+    include_gc: bool = True,
+) -> None:
+    """Write a complete hplc_config.yaml annotated with auto-detected values.
+
+    When ``include_hplc`` is True a ``processing:`` / ``analysis:`` block
+    (HPLC modality) is written with the auto-detected ``data_dir``.
+    When ``include_gc`` is True a ``gc:`` block is written.
+    """
     has_standards = bool(result.standard_injections)
-    convention_note = (
-        "comma-separated (\"<time>, <strain>, <replicate>\")"
-        if result.sample_convention == "comma"
-        else "underscore-separated (\"<time>_<strain>_<replicate>\")"
-    )
 
     lines = [
-        f"# hplc_config.yaml -- auto-generated by `hplc init`",
-        f"# Review every line marked  # <-- REVIEW  before running `hplc run`.",
-        f"# Lines marked  # auto-detected  were inferred from the data and are",
-        f"# usually correct but should be sanity-checked.",
-        f"",
-        f"plots:",
-        f"  n_cols: 3",
-        f"",
-        f"gc:",
-        f"  # data_dir omitted: pipeline scans the experiment folder and all",
-        f"  # one-level subfolders for GC .D data.",
-        f"  compounds_file: gc_compounds.csv",
-        f"",
-        f"  processing:",
-        f"    quant_channel: eic  # auto-detected: SIM data present",
-        f"",
-        f"  calibration:",
-        f"    source: {'injections' if has_standards else 'csv'}  # auto-detected",
+        "# hplc_config.yaml  --  auto-generated by `hplc init`",
+        "# Lines marked  # <-- REVIEW  should be confirmed before running.",
+        "# Lines marked  # auto-detected  were inferred from the data.",
+        "",
     ]
 
-    if has_standards:
+    if include_hplc:
+        dd = result.hplc_data_dir
+        if dd is None:
+            data_dir_line = "  data_dir: null  # .D files are directly in the experiment folder"
+        elif isinstance(dd, list):
+            data_dir_line = "  data_dir:  # auto-detected: HPLC data in multiple subfolders\n" + \
+                            "\n".join(f"    - {d}" for d in dd)
+        else:
+            data_dir_line = f"  data_dir: {dd}  # auto-detected"
         lines += [
-            f"    standard_pattern: '{std_pattern}'  # auto-detected",
-            f"    force_through_origin: true",
-            f"    clamp_negative_to_zero: true",
-            f"    require_ion_ratio_pass: false",
-            f"    dilution_factor: 1.0  # <-- REVIEW: set to sample prep dilution (e.g. 10.0 for 1:10)",
+            "# -- HPLC modality -------------------------------------------------------",
+            "processing:",
+            "  wavelength_nm: 262  # <-- REVIEW: set to your DAD detection wavelength (nm)",
+            data_dir_line,
+            "  blank_folder_name: null  # <-- REVIEW: blank .D folder name, or null",
+            "",
+            "analysis:",
+            "  compounds_file: compounds.csv    # edit compound names and RT windows",
+            "  standard_file: standard.csv      # edit calibration points",
+            "  exclude_unknown: true",
+            "  calibration:",
+            "    source: csv  # <-- REVIEW: 'csv' reads standard.csv; 'injections' uses name-encoded standards",
+            "    dilution_factor: 1.0  # <-- REVIEW: sample prep dilution (e.g. 10.0 for 1:10 dilution)",
+            "  sample_name:",
+            "    # Default expects: \"48, s11, A\"  ->  time=48, strain=s11, replicate=A",
+            r"    pattern: '^\s*(?P<time>\d+)\s*,\s*(?P<strain>[^,]+?)\s*,\s*(?P<replicate>[A-Za-z])\s*$'",
+            "",
         ]
-    else:
+
+    if include_gc:
+        convention_note = (
+            "comma-separated  e.g. \"48, s11, A\""
+            if result.sample_convention == "comma"
+            else "underscore-separated  e.g. \"48_s11_A\""
+        )
+        n_sample = len(result.sample_injections)
+        n_match = _count_matches(
+            [i.sample_name for i in result.sample_injections], result.sample_pattern
+        )
         lines += [
-            f"    standard_file: gc_standard.csv  # <-- REVIEW: provide standard curve CSV",
-            f"    force_through_origin: true",
-            f"    clamp_negative_to_zero: true",
-            f"    dilution_factor: 1.0  # <-- REVIEW",
+            "# -- GC-MS modality ------------------------------------------------------",
+            "gc:",
+            "  # data_dir not set: the pipeline scans the experiment folder and its",
+            "  # one-level subfolders.  This finds both the sample .D files and any",
+            "  # standard .D files in a sibling subfolder (e.g. GC_standard_injections/).",
+            "  compounds_file: gc_compounds.csv  # rename Peak_N to real compound names",
+            "",
+            "  processing:",
+            "    quant_channel: eic  # auto-detected: SIM data present",
+            "",
+            "  calibration:",
+            f"    source: {'injections' if has_standards else 'csv'}  # auto-detected",
+        ]
+
+        if has_standards:
+            lines += [
+                f"    standard_pattern: '{std_pattern}'",
+                "    force_through_origin: true",
+                "    clamp_negative_to_zero: true",
+                "    require_ion_ratio_pass: false",
+                "    dilution_factor: 1.0  # <-- REVIEW: sample prep dilution (e.g. 10.0 for 1:10)",
+            ]
+        else:
+            lines += [
+                "    standard_file: gc_standard.csv  # <-- REVIEW: provide a standard-curve CSV",
+                "    force_through_origin: true",
+                "    clamp_negative_to_zero: true",
+                "    dilution_factor: 1.0  # <-- REVIEW",
+            ]
+
+        lines += [
+            "",
+            f"  # Sample names auto-detected as {convention_note}  # auto-detected",
+            f"  # {n_match}/{n_sample} sample(s) matched.",
+            "  sample_name:",
+            f"    pattern: '{result.sample_pattern}'  # auto-detected",
+            "",
+            "  cv_warning_threshold: 15.0",
+            "  results_dirname: gc_results",
+            "  analysis_dirname: gc_analysis",
+            "",
         ]
 
     lines += [
-        f"",
-        f"  # Sample names detected as {convention_note}.  # auto-detected",
-        f"  # {_count_matches([i.sample_name for i in result.sample_injections], result.sample_pattern)}"
-        f"/{len(result.sample_injections)} sample(s) matched.",
-        f"  sample_name:",
-        f"    pattern: '{result.sample_pattern}'  # auto-detected",
-        f"",
-        f"  cv_warning_threshold: 15.0",
-        f"  results_dirname: gc_results",
-        f"  analysis_dirname: gc_analysis",
+        "# -- Shared plotting settings ---------------------------------------------",
+        "plots:",
+        "  n_cols: 3",
     ]
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -497,17 +640,32 @@ def write_hplc_config(result: InitResult, output_path: Path, std_pattern: str) -
 # Console summary
 # ---------------------------------------------------------------------------
 
-def print_summary(result: InitResult, config_path: Path, compounds_path: Path) -> None:
+def print_summary(
+    result: InitResult,
+    config_path: Path,
+    compounds_path: Optional[Path],
+    extra_files: Optional[list[Path]] = None,
+    include_hplc: bool = True,
+    include_gc: bool = True,
+) -> None:
     sep = "=" * 70
     print(f"\n{sep}")
     print("INIT SUMMARY")
     print(sep)
-    print(f"  Injections found : {len(result.all_injections)}")
-    print(f"    Standards      : {len(result.standard_injections)}")
-    print(f"    Samples        : {len(result.sample_injections)}")
-    print(f"  Monitored m/z    : {[int(m) for m in result.monitored_mz]}")
-    print(f"  Sample naming    : {result.sample_convention}-separated")
-    print(f"  Peaks detected   : {len(result.peaks)}")
+    if result.hplc_data_dir:
+        dd = result.hplc_data_dir
+        if isinstance(dd, list):
+            for d in dd:
+                print(f"  HPLC data dir    : {d}/")
+        else:
+            print(f"  HPLC data dir    : {dd}/")
+    if result.all_injections:
+        print(f"  GC injections    : {len(result.all_injections)}")
+        print(f"    Standards      : {len(result.standard_injections)}")
+        print(f"    Samples        : {len(result.sample_injections)}")
+        print(f"  Monitored m/z    : {[int(m) for m in result.monitored_mz]}")
+        print(f"  GC sample naming : {result.sample_convention}-separated")
+        print(f"  GC peaks found   : {len(result.peaks)}")
     if result.peaks:
         print()
         print(f"  {'Peak':<12} {'RT window':>14}  {'Quant m/z':>10}  {'Qualifiers'}")
@@ -520,7 +678,10 @@ def print_summary(result: InitResult, config_path: Path, compounds_path: Path) -
 
     print(f"\n  Written:")
     print(f"    {config_path}")
-    print(f"    {compounds_path}")
+    if compounds_path is not None:
+        print(f"    {compounds_path}")
+    for p in (extra_files or []):
+        print(f"    {p}")
 
     if result.warnings:
         print(f"\n  Warnings:")
@@ -528,8 +689,17 @@ def print_summary(result: InitResult, config_path: Path, compounds_path: Path) -
             print(f"    ! {w}")
 
     print(f"\n  Next steps:")
-    print(f"    1. Rename Peak_N entries in gc_compounds.csv to real compound names")
-    print(f"    2. Set calibrate_as for any compound that borrows another's standards")
-    print(f"    3. Set dilution_factor in hplc_config.yaml (current: 1.0)")
-    print(f"    4. Run:  hplc run {result.experiment_dir}")
+    steps = []
+    if result.peaks:
+        steps.append("Rename Peak_N entries in gc_compounds.csv to real compound names")
+        steps.append("Set calibrate_as for any compound that borrows another's standards")
+    if include_hplc:
+        steps.append("Edit compounds.csv with your HPLC compound RT windows")
+    if include_hplc:
+        steps.append("Set dilution_factor in hplc_config.yaml under analysis.calibration (current: 1.0)")
+    if include_gc:
+        steps.append("Set dilution_factor in hplc_config.yaml under gc.calibration (current: 1.0)")
+    steps.append(f"Run:  hplc run {result.experiment_dir}")
+    for i, step in enumerate(steps, 1):
+        print(f"    {i}. {step}")
     print(sep)

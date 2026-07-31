@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from hplc_gc_pipeline.gui.common import run_stage
+from hplc_gc_pipeline.gui.common import load_into_state, run_stage
 
 exp = Path(st.session_state.loaded_exp)
 
@@ -29,7 +29,7 @@ with st.container(border=True):
     )
     if st.session_state.get("dirty"):
         st.warning(
-            "Unsaved parameter edits — go to **Parameters** and click **Apply changes** first.",
+            "Unsaved parameter edits — go to **Parameters** and click **Write to config** first.",
             icon=":material/edit:",
         )
     with st.container(horizontal=True):
@@ -41,11 +41,19 @@ if go_process or go_analyze or go_run:
     sub = "process" if go_process else "analyze" if go_analyze else "run"
     with st.spinner(f"Running `hplc {sub}` …"):
         code = run_stage(exp, sub)
-    (st.success if code == 0 else st.error)(
-        f"`hplc {sub}` finished (exit {code}).",
-        icon=":material/check:" if code == 0 else ":material/error:",
-    )
-    st.caption(f"Log saved to `{st.session_state.last_log_path}`")
+    if code == 0:
+        st.toast(
+            f"`hplc {sub}` complete — results are ready.",
+            icon=":material/check:",
+        )
+        load_into_state(exp)
+        st.rerun()
+    else:
+        st.error(
+            f"`hplc {sub}` failed (exit {code}).",
+            icon=":material/error:",
+        )
+        st.caption(f"Log saved to `{st.session_state.last_log_path}`")
 elif st.session_state.get("last_log"):
     with st.expander("Last run log", icon=":material/terminal:"):
         st.code(st.session_state.last_log, language="text")

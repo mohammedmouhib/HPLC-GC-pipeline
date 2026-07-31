@@ -189,11 +189,28 @@ class Config:
 
     # --- Convenience path accessors (all under experiment_dir) -------------
     @property
+    def data_roots(self) -> list[Path]:
+        """All folders scanned for raw HPLC .D injections.
+
+        ``data_dir`` may be a single subfolder name (str), a list of subfolder
+        names, or None (meaning the experiment root itself).
+        """
+        dd = self.processing.data_dir
+        if dd is None:
+            return [self.experiment_dir]
+        if isinstance(dd, list):
+            result = []
+            for d in dd:
+                p = Path(str(d)).expanduser()
+                result.append(p if p.is_absolute() else self.experiment_dir / str(d))
+            return result or [self.experiment_dir]
+        p = Path(str(dd)).expanduser()
+        return [p if p.is_absolute() else self.experiment_dir / str(dd)]
+
+    @property
     def data_root(self) -> Path:
-        """Folder scanned for raw .D injections (experiment_dir/<data_dir>)."""
-        if self.processing.data_dir:
-            return self.experiment_dir / self.processing.data_dir
-        return self.experiment_dir
+        """First data root (single-dir backward-compat accessor)."""
+        return self.data_roots[0]
 
     @property
     def results_dir(self) -> Path:

@@ -24,7 +24,7 @@ from . import pipeline
 # Errors caused by user input (bad paths, missing or invalid config). These get
 # a clean one-line message; anything else is treated as an unexpected bug and
 # shown with a full traceback (or via --debug).
-USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError)
+USER_ERRORS = (FileNotFoundError, NotADirectoryError, ValueError, FileExistsError)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,24 +53,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     ip = sub.add_parser(
         "init",
-        help="Auto-discover a GC-MS experiment folder and write starter config files",
+        help="Auto-discover an experiment folder and write starter config files",
     )
     ip.add_argument("experiment_dir", type=Path, help="Path to the experiment folder")
     ip.add_argument(
+        "--mode", choices=["auto", "hplc", "gc", "both"], default="auto",
+        help="Which modalities to configure: auto=detect from data (default), "
+             "hplc=HPLC only, gc=GC only, both=force both",
+    )
+    ip.add_argument(
         "--rt-min", type=float, default=1.5, metavar="MIN",
-        help="Start of RT scan window in minutes (default: 1.5; skips solvent front)",
+        help="GC peak detection: RT scan start in minutes (default: 1.5)",
     )
     ip.add_argument(
         "--rt-max", type=float, default=30.0, metavar="MAX",
-        help="End of RT scan window in minutes (default: 30.0)",
+        help="GC peak detection: RT scan end in minutes (default: 30.0)",
     )
     ip.add_argument(
         "--rt-margin", type=float, default=0.08, metavar="MIN",
-        help="Margin added to each side of a detected peak RT window (default: 0.08 min)",
+        help="GC peak detection: margin added to each peak RT edge (default: 0.08 min)",
     )
     ip.add_argument(
         "--force", action="store_true",
-        help="Overwrite existing hplc_config.yaml / gc_compounds.csv without prompting",
+        help="Overwrite existing config/CSV files without prompting",
     )
     ip.add_argument("--debug", action="store_true", help="Show full traceback on error")
 
@@ -83,7 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run_init(args) -> None:
     """Handle the `hplc init` subcommand."""
-    from .gc_init import run_gc_init, write_gc_compounds, write_hplc_config, print_summary
+    import shutil
+    from .gc_init import (
+        run_gc_init, write_gc_compounds, write_hplc_config, print_summary,
+        detect_hplc_data_dir, find_gc_injections,
+    )
     from .gc_calibration import GCCalibrationConfig
 
     exp_dir = Path(args.experiment_dir).expanduser().resolve()
@@ -91,9 +100,9 @@ def _run_init(args) -> None:
         raise NotADirectoryError(f"Experiment directory not found: {exp_dir}")
 
     config_path = exp_dir / "hplc_config.yaml"
-    compounds_path = exp_dir / "gc_compounds.csv"
+    gc_compounds_path = exp_dir / "gc_compounds.csv"
 
-    existing = [p for p in (config_path, compounds_path) if p.exists()]
+    existing = [p for p in (config_path, gc_compounds_path) if p.exists()]
     if existing and not args.force:
         names = " and ".join(p.name for p in existing)
         raise FileExistsError(
@@ -103,17 +112,63 @@ def _run_init(args) -> None:
 
     std_pattern = GCCalibrationConfig.standard_pattern
 
+    # Determine which modalities to configure
+    mode = getattr(args, "mode", "auto")
+    if mode == "auto":
+        has_hplc = detect_hplc_data_dir(exp_dir) is not None or any(
+            p.is_dir() and p.name.endswith(".D") and not (p / "data.ms").exists()
+            for p in exp_dir.iterdir()
+        )
+        has_gc = bool(find_gc_injections(exp_dir))
+        include_hplc = has_hplc or not has_gc  # default to HPLC when ambiguous
+        include_gc = has_gc
+    elif mode == "hplc":
+        include_hplc, include_gc = True, False
+    elif mode == "gc":
+        include_hplc, include_gc = False, True
+    else:  # "both"
+        include_hplc, include_gc = True, True
+
     result = run_gc_init(
         exp_dir,
         std_pattern=std_pattern,
         rt_scan_min=args.rt_min,
         rt_scan_max=args.rt_max,
         rt_margin=args.rt_margin,
+        include_gc=include_gc,
     )
 
-    write_gc_compounds(result, compounds_path)
-    write_hplc_config(result, config_path, std_pattern)
-    print_summary(result, config_path, compounds_path)
+    extra_files: list[Path] = []
+
+    if include_gc:
+        write_gc_compounds(result, gc_compounds_path)
+    elif gc_compounds_path.exists():
+        pass  # leave existing file
+
+    write_hplc_config(result, config_path, std_pattern,
+                      include_hplc=include_hplc, include_gc=include_gc)
+
+    # Seed HPLC CSV files from package defaults when HPLC is active.
+    if include_hplc:
+        _gui_dir = Path(__file__).parent / "gui"
+        hplc_compounds_path = exp_dir / "compounds.csv"
+        standard_path = exp_dir / "standard.csv"
+        for src, dst in (
+            (_gui_dir / "compounds_default.csv", hplc_compounds_path),
+            (_gui_dir / "standard_default.csv", standard_path),
+        ):
+            if not dst.exists() and src.exists():
+                shutil.copy2(src, dst)
+                extra_files.append(dst)
+
+    print_summary(
+        result,
+        config_path,
+        gc_compounds_path if include_gc else None,
+        extra_files=extra_files,
+        include_hplc=include_hplc,
+        include_gc=include_gc,
+    )
 
 
 def _apply_modality_filter(cfg, modality) -> None:

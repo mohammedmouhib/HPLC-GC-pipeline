@@ -220,7 +220,8 @@ def load_into_state(exp: Path) -> None:
 
     st.session_state.w_wavelength = int(g(["processing", "wavelength_nm"], 262))
     st.session_state.w_blank = g(["processing", "blank_folder_name"], "") or ""
-    st.session_state.w_datadir = g(["processing", "data_dir"], "") or ""
+    _dd = g(["processing", "data_dir"], "") or ""
+    st.session_state.w_datadir = ", ".join(_dd) if isinstance(_dd, list) else _dd
     st.session_state.w_deconv = bool(g(["processing", "deconvolution", "enabled"], True))
     st.session_state.w_minr2 = float(g(["processing", "deconvolution", "min_r2"], 0.95))
     st.session_state.w_maxcomps = int(g(["processing", "deconvolution", "max_comps"], 5))
@@ -230,6 +231,7 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_min_width = "" if g(["processing", "peak_detection", "min_width"]) is None else str(g(["processing", "peak_detection", "min_width"]))
     st.session_state.w_distance = "" if g(["processing", "peak_detection", "distance"]) is None else str(g(["processing", "peak_detection", "distance"]))
 
+    st.session_state.w_hplc_enabled = any(k in doc for k in ("processing", "analysis", "hplc"))
     st.session_state.w_excl = bool(g(["analysis", "exclude_unknown"], True))
     st.session_state.w_cv = float(g(["analysis", "cv_warning_threshold"], 15.0))
     st.session_state.w_clamp = bool(g(["analysis", "calibration", "clamp_negative_to_zero"], True))
@@ -297,30 +299,42 @@ def apply_changes(
 ) -> tuple[bool, str]:
     doc = st.session_state.doc
     s = st.session_state
-    cfg_set(doc, ["processing", "wavelength_nm"], int(s.w_wavelength))
-    cfg_set(doc, ["processing", "blank_folder_name"], s.w_blank or None)
-    cfg_set(doc, ["processing", "data_dir"], s.w_datadir or None)
-    cfg_set(doc, ["processing", "deconvolution", "enabled"], bool(s.w_deconv))
-    cfg_set(doc, ["processing", "deconvolution", "min_r2"], float(s.w_minr2))
-    cfg_set(doc, ["processing", "deconvolution", "max_comps"], int(s.w_maxcomps))
-    cfg_set(doc, ["processing", "deconvolution", "models"], _csv_list(s.w_models))
-    cfg_set(doc, ["processing", "peak_detection", "min_height"], _num_or_none(s.w_min_height, float))
-    cfg_set(doc, ["processing", "peak_detection", "min_prominence"], _num_or_none(s.w_min_prom, float))
-    cfg_set(doc, ["processing", "peak_detection", "min_width"], _num_or_none(s.w_min_width, int))
-    cfg_set(doc, ["processing", "peak_detection", "distance"], _num_or_none(s.w_distance, int))
-    cfg_set(doc, ["analysis", "exclude_unknown"], bool(s.w_excl))
-    cfg_set(doc, ["analysis", "cv_warning_threshold"], float(s.w_cv))
-    cfg_set(doc, ["analysis", "calibration", "clamp_negative_to_zero"], bool(s.w_clamp))
-    cfg_set(doc, ["analysis", "calibration", "zero_area_zero_conc"], bool(s.w_zero))
-    cfg_set(doc, ["analysis", "calibration", "source"], s.w_cal_source or "csv")
-    cfg_set(doc, ["analysis", "calibration", "standard_pattern"], s.w_std_pattern or "")
-    cfg_set(doc, ["analysis", "calibration", "dilution_factor"], float(s.w_dilution))
-    cfg_set(doc, ["analysis", "calibration", "force_through_origin"], bool(s.w_force_origin))
-    cfg_set(doc, ["analysis", "sample_name", "pattern"], s.w_pattern)
-    cfile = s.w_compounds_file or "compounds.csv"
-    sfile = s.w_standard_file or "standard.csv"
-    cfg_set(doc, ["analysis", "compounds_file"], cfile)
-    cfg_set(doc, ["analysis", "standard_file"], sfile)
+
+    if s.get("w_hplc_enabled", True):
+        cfile = s.w_compounds_file or "compounds.csv"
+        sfile = s.w_standard_file or "standard.csv"
+        cfg_set(doc, ["processing", "wavelength_nm"], int(s.w_wavelength))
+        cfg_set(doc, ["processing", "blank_folder_name"], s.w_blank or None)
+        _dd_parts = [p.strip() for p in (s.w_datadir or "").split(",") if p.strip()]
+        cfg_set(doc, ["processing", "data_dir"],
+                None if not _dd_parts else
+                (_dd_parts[0] if len(_dd_parts) == 1 else _dd_parts))
+        cfg_set(doc, ["processing", "deconvolution", "enabled"], bool(s.w_deconv))
+        cfg_set(doc, ["processing", "deconvolution", "min_r2"], float(s.w_minr2))
+        cfg_set(doc, ["processing", "deconvolution", "max_comps"], int(s.w_maxcomps))
+        cfg_set(doc, ["processing", "deconvolution", "models"], _csv_list(s.w_models))
+        cfg_set(doc, ["processing", "peak_detection", "min_height"], _num_or_none(s.w_min_height, float))
+        cfg_set(doc, ["processing", "peak_detection", "min_prominence"], _num_or_none(s.w_min_prom, float))
+        cfg_set(doc, ["processing", "peak_detection", "min_width"], _num_or_none(s.w_min_width, int))
+        cfg_set(doc, ["processing", "peak_detection", "distance"], _num_or_none(s.w_distance, int))
+        cfg_set(doc, ["analysis", "exclude_unknown"], bool(s.w_excl))
+        cfg_set(doc, ["analysis", "cv_warning_threshold"], float(s.w_cv))
+        cfg_set(doc, ["analysis", "calibration", "clamp_negative_to_zero"], bool(s.w_clamp))
+        cfg_set(doc, ["analysis", "calibration", "zero_area_zero_conc"], bool(s.w_zero))
+        cfg_set(doc, ["analysis", "calibration", "source"], s.w_cal_source or "csv")
+        cfg_set(doc, ["analysis", "calibration", "standard_pattern"], s.w_std_pattern or "")
+        cfg_set(doc, ["analysis", "calibration", "dilution_factor"], float(s.w_dilution))
+        cfg_set(doc, ["analysis", "calibration", "force_through_origin"], bool(s.w_force_origin))
+        cfg_set(doc, ["analysis", "sample_name", "pattern"], s.w_pattern)
+        cfg_set(doc, ["analysis", "compounds_file"], cfile)
+        cfg_set(doc, ["analysis", "standard_file"], sfile)
+    else:
+        cfile = s.get("w_compounds_file") or "compounds.csv"
+        sfile = s.get("w_standard_file") or "standard.csv"
+        for k in ("processing", "analysis"):
+            if k in doc:
+                del doc[k]
+
     cfg_set(doc, ["plots", "n_cols"], int(s.w_ncols))
     cfg_set(doc, ["plots", "plot_strains"], plot_strains or None)
     cfg_set(doc, ["plots", "strain_order"], _csv_list(s.w_order))
@@ -351,8 +365,9 @@ def apply_changes(
     buf = StringIO()
     yaml.dump(doc, buf)
     (exp / "hplc_config.yaml").write_text(buf.getvalue(), encoding="utf-8")
-    compounds_df.dropna(how="all").to_csv(exp / cfile, index=False)
-    standard_df.dropna(how="all").to_csv(exp / sfile, index=False)
+    if s.get("w_hplc_enabled", True):
+        compounds_df.dropna(how="all").to_csv(exp / cfile, index=False)
+        standard_df.dropna(how="all").to_csv(exp / sfile, index=False)
     if s.w_gc_enabled:
         gc_compounds_df.dropna(how="all").to_csv(exp / gcfile, index=False)
 
