@@ -430,7 +430,7 @@ if config_path.exists() and not _ro:
 
         dilution = st.number_input(
             "Sample dilution factor",
-            value=1.0, min_value=0.0, step=1.0,
+            value=1.0, min_value=1.0, step=1.0,
             key="init_dilution",
             help="If samples were diluted before injection, enter the inverse dilution "
                  "(e.g. 1:10 dilution → 10). Standards are never scaled.",

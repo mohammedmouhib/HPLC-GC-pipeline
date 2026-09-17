@@ -98,6 +98,10 @@ def run_gc_analysis(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
     # Parse sample names -> drops the standard injections (they don't match the
     # sample pattern), then pool replicate letters across runs.
     df = sample_names.load_peak_data(quantified_csv, gc.sample_name.pattern)
+    if df.empty:
+        print("\n  No experimental samples found (calibration-only run). Skipping stats/dashboard.")
+        print("\nGC Stage 2 complete. Analysis in:", analysis_dir)
+        return pd.DataFrame(), pd.DataFrame()
     df = sample_names.pool_replicates_across_experiments(df)
 
     consolidated = _to_consolidated(df)
@@ -111,5 +115,6 @@ def run_gc_analysis(cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
         plot_strains=cfg.plots.plot_strains,
         n_cols=cfg.plots.n_cols,
     )
+    dash.plot_induction_heatmaps(consolidated, analysis_dir)
     print("\nGC Stage 2 complete. Analysis in:", analysis_dir)
     return consolidated, stats_df

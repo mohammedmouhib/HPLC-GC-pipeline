@@ -34,7 +34,7 @@ STANDARD_COLS = ["Compound", "Area_Integral", "concentration"]
 GC_COMPOUND_COLS = ["Compound", "RT_low", "RT_high", "quantifier_mz",
                     "qualifier_mz", "ion_ratio_tol", "calibrate_as", "Notes"]
 
-GC_SAMPLE_PATTERN_DEFAULT = r"^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(?P<replicate>[A-Za-z])\s*$"
+GC_SAMPLE_PATTERN_DEFAULT = r"^\s*(?P<time>\d+)\s*[_,]\s*(?P<strain>[^_,]+?)\s*[_,]\s*(?P<replicate>[A-Za-z])\s*$"
 GC_STANDARD_PATTERN_DEFAULT = r"^(?P<conc>\d+(?:\.\d+)?)\s*(?P<unit>[a-zA-Zµ]*M)_(?P<compound>[^_]+)"
 
 NOISE = ("Sparse", "spsolve", "flatfit", "UserWarning", "RuntimeWarning")
@@ -231,14 +231,15 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_min_width = "" if g(["processing", "peak_detection", "min_width"]) is None else str(g(["processing", "peak_detection", "min_width"]))
     st.session_state.w_distance = "" if g(["processing", "peak_detection", "distance"]) is None else str(g(["processing", "peak_detection", "distance"]))
 
-    st.session_state.w_hplc_enabled = any(k in doc for k in ("processing", "analysis", "hplc"))
+    st.session_state.w_hplc_enabled = any(k in doc for k in ("processing", "hplc"))
     st.session_state.w_excl = bool(g(["analysis", "exclude_unknown"], True))
     st.session_state.w_cv = float(g(["analysis", "cv_warning_threshold"], 15.0))
     st.session_state.w_clamp = bool(g(["analysis", "calibration", "clamp_negative_to_zero"], True))
     st.session_state.w_zero = bool(g(["analysis", "calibration", "zero_area_zero_conc"], True))
     st.session_state.w_cal_source = g(["analysis", "calibration", "source"], "csv")
     st.session_state.w_std_pattern = g(["analysis", "calibration", "standard_pattern"], GC_STANDARD_PATTERN_DEFAULT)
-    st.session_state.w_dilution = float(g(["analysis", "calibration", "dilution_factor"], 1.0))
+    _hplc_df = g(["analysis", "calibration", "dilution_factor"], 1.0)
+    st.session_state.w_dilution = float(_hplc_df) if (isinstance(_hplc_df, (int, float)) and float(_hplc_df) > 0) else 1.0
     st.session_state.w_force_origin = bool(g(["analysis", "calibration", "force_through_origin"], False))
     st.session_state.w_pattern = g(["analysis", "sample_name", "pattern"], "")
     st.session_state.w_compounds_file = g(["analysis", "compounds_file"], "compounds.csv") or "compounds.csv"
@@ -260,7 +261,8 @@ def load_into_state(exp: Path) -> None:
     st.session_state.w_gc_cal_source = g(["gc", "calibration", "source"], "injections")
     st.session_state.w_gc_std_pattern = g(["gc", "calibration", "standard_pattern"], GC_STANDARD_PATTERN_DEFAULT)
     st.session_state.w_gc_std_file = g(["gc", "calibration", "standard_file"], "gc_standard.csv") or "gc_standard.csv"
-    st.session_state.w_gc_dilution = float(g(["gc", "calibration", "dilution_factor"], 1.0))
+    _gc_df = g(["gc", "calibration", "dilution_factor"], 1.0)
+    st.session_state.w_gc_dilution = float(_gc_df) if (isinstance(_gc_df, (int, float)) and float(_gc_df) > 0) else 1.0
     st.session_state.w_gc_force_origin = bool(g(["gc", "calibration", "force_through_origin"], False))
     st.session_state.w_gc_clamp = bool(g(["gc", "calibration", "clamp_negative_to_zero"], True))
     st.session_state.w_gc_require_ratio = bool(g(["gc", "calibration", "require_ion_ratio_pass"], False))
@@ -289,14 +291,44 @@ def load_into_state(exp: Path) -> None:
     _ensure_file_server(str(exp))
 
 
+def _resolve_edited_df(edited, original_df: pd.DataFrame) -> pd.DataFrame:
+    """Resolve a Streamlit data_editor value.
+
+    st.data_editor's session-state key stores an edits dict
+    ({"edited_rows": ..., "added_rows": ..., "deleted_rows": ...});
+    the widget return value is the full edited DataFrame. Accept both.
+    """
+    if isinstance(edited, pd.DataFrame):
+        return edited
+    df = original_df.copy()
+    for pos_str, changes in (edited.get("edited_rows") or {}).items():
+        pos = int(pos_str)
+        if pos < len(df):
+            for col, val in changes.items():
+                if col in df.columns:
+                    df.iloc[pos, df.columns.get_loc(col)] = val
+    added = edited.get("added_rows") or []
+    if added:
+        df = pd.concat([df, pd.DataFrame(added)], ignore_index=True)
+    for pos in sorted(edited.get("deleted_rows") or [], reverse=True):
+        if pos < len(df):
+            df = df.drop(index=df.index[pos])
+    return df.reset_index(drop=True)
+
+
 def apply_changes(
     exp: Path,
-    compounds_df: pd.DataFrame,
-    standard_df: pd.DataFrame,
-    gc_compounds_df: pd.DataFrame,
+    compounds_df,
+    standard_df,
+    gc_compounds_df,
     plot_strains,
     bar_time_points,
 ) -> tuple[bool, str]:
+    # Resolve data_editor session-state edits dicts to full DataFrames
+    compounds_df = _resolve_edited_df(compounds_df, st.session_state.compounds_df)
+    standard_df = _resolve_edited_df(standard_df, st.session_state.standard_df)
+    gc_compounds_df = _resolve_edited_df(gc_compounds_df, st.session_state.gc_compounds_df)
+
     doc = st.session_state.doc
     s = st.session_state
 
@@ -432,19 +464,23 @@ def _bokeh_content_height(path: Path, n_cols: int = 3) -> int:
         return 2000
 
 
-def embed_html(path: Path, height: int = 900, scrolling: bool = False) -> None:
+def embed_html(path: Path, height: int = 900, scrolling: bool = False,
+               cache_key: int = 0) -> None:
     """Embed an HTML result file. Uses the local file server when available
-    (proper Bokeh sizing); falls back to inline injection."""
+    (proper Bokeh sizing); falls back to inline injection.
+
+    Pass a non-zero ``cache_key`` (e.g. from session state) to append ``?v=N``
+    to the iframe URL, forcing the browser to reload the file after an update.
+    """
     port = _fs.get("port", 0)
     if port:
         try:
             exp = Path(st.session_state.loaded_exp)
             rel = path.relative_to(exp).as_posix()
-            components.iframe(
-                src=f"http://127.0.0.1:{port}/{rel}",
-                height=height,
-                scrolling=scrolling,
-            )
+            url = f"http://127.0.0.1:{port}/{rel}"
+            if cache_key:
+                url += f"?v={cache_key}"
+            components.iframe(src=url, height=height, scrolling=scrolling)
             return
         except (ValueError, KeyError):
             pass

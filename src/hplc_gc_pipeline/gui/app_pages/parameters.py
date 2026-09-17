@@ -98,7 +98,7 @@ with st.container(border=True):
         )
         g3.number_input(
             "Sample dilution factor", key="w_gc_dilution",
-            min_value=0.0, step=1.0, on_change=_mark_dirty,
+            min_value=1.0, step=1.0, on_change=_mark_dirty,
             disabled=_ro,
             help="Multiply sample concentrations by this to recover the undiluted value. "
                  "1:10 dilution → 10. Standards are never scaled.",
@@ -228,7 +228,7 @@ with st.container(border=True):
             )
             b2.number_input(
                 "Sample dilution factor", key="w_dilution",
-                min_value=0.0, step=1.0, on_change=_mark_dirty, disabled=_ro,
+                min_value=1.0, step=1.0, on_change=_mark_dirty, disabled=_ro,
                 help="Multiply sample concentrations by this to recover the undiluted value. "
                      "1:10 dilution → 10. Standards are never scaled.",
             )

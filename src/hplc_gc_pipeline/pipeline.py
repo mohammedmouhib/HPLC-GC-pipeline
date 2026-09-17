@@ -14,6 +14,11 @@ Per modality, two stages write back into the experiment folder:
 
 from __future__ import annotations
 
+import copy
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
 import pandas as pd
 
 from .config import Config
@@ -205,3 +210,266 @@ def _combined_dashboard(cfg: Config,
         n_cols=cfg.plots.n_cols,
     )
     print("\nCombined dashboard in:", combined_dir)
+
+
+# ---------------------------------------------------------------------------
+# Targeted re-integration of a single injection
+# ---------------------------------------------------------------------------
+
+def reintegrate_injection(
+    cfg: Config,
+    folder_name: str,
+    *,
+    min_r2: Optional[float] = None,
+    max_comps: Optional[int] = None,
+    min_height: Optional[float] = None,
+    min_prominence: Optional[float] = None,
+    no_deconvolution: bool = False,
+    manual_bounds: Optional[dict] = None,
+    skip_analysis: bool = False,
+) -> None:
+    """Re-process one injection and patch the existing Stage 1 outputs in-place.
+
+    Finds ``folder_name`` in the configured data roots, re-runs MOCCA2 (with
+    optional parameter overrides that apply only to this injection), then:
+
+    * replaces that folder's rows in ``peak_results.csv``
+    * replaces that folder's rows in ``chromatogram_traces.csv``
+    * re-renders the per-injection PNG and refreshes the HTML gallery
+    * re-runs Stage 2 analysis (unless ``skip_analysis=True``)
+
+    The rest of the dataset is untouched.
+    """
+    from .agilent import find_injection_folders, load_chromatogram
+
+    if not cfg.peak_results_csv.exists():
+        raise FileNotFoundError(
+            f"{cfg.peak_results_csv} not found — run Stage 1 (process) first."
+        )
+
+    # ------------------------------------------------------------------
+    # 1. Locate the target injection
+    # ------------------------------------------------------------------
+    target_inj = None
+    for data_root in cfg.data_roots:
+        for inj in find_injection_folders(data_root):
+            if inj.folder_name == folder_name:
+                target_inj = inj
+                break
+        if target_inj is not None:
+            break
+
+    if target_inj is None:
+        raise ValueError(
+            f"Injection folder '{folder_name}' not found in {cfg.data_roots}.\n"
+            f"Check the folder name (include the .D suffix)."
+        )
+
+    print(f"\n{'=' * 70}")
+    print(f"RE-INTEGRATING  {folder_name}  '{target_inj.sample_name}'")
+    print(f"{'=' * 70}")
+
+    # ------------------------------------------------------------------
+    # 2. Build processing config (override only what was explicitly given)
+    # ------------------------------------------------------------------
+    proc_cfg = copy.deepcopy(cfg.processing)
+    if min_r2 is not None:
+        proc_cfg.deconvolution.min_r2 = min_r2
+        print(f"  Override: min_r2         = {min_r2}")
+    if max_comps is not None:
+        proc_cfg.deconvolution.max_comps = max_comps
+        print(f"  Override: max_comps      = {max_comps}")
+    if min_height is not None:
+        proc_cfg.peak_detection.min_height = min_height
+        print(f"  Override: min_height     = {min_height}")
+    if min_prominence is not None:
+        proc_cfg.peak_detection.min_prominence = min_prominence
+        print(f"  Override: min_prominence = {min_prominence}")
+    if no_deconvolution:
+        proc_cfg.deconvolution.enabled = False
+        print("  Override: deconvolution  = disabled (manual trapezoid)")
+
+    # ------------------------------------------------------------------
+    # 3. Load and process the single chromatogram
+    # ------------------------------------------------------------------
+    chrom = load_chromatogram(target_inj.folder_path, proc_cfg.wavelength_nm)
+    chrom.sample_name = target_inj.sample_name
+    chrom.folder_name = target_inj.folder_name
+    chrom.experiment_name = target_inj.experiment_name
+
+    n_peaks = processing._process_single(chrom, proc_cfg.peak_detection, proc_cfg.deconvolution)
+    print(f"  Detected {n_peaks} peaks")
+
+    # ------------------------------------------------------------------
+    # 4. Build peak rows for this injection
+    # ------------------------------------------------------------------
+    components = processing._safe_components(chrom)
+    time_data = processing._get_time(chrom)
+    experiment_name = getattr(chrom, "experiment_name", "Main")
+
+    if components:
+        new_rows = processing._rows_from_components(
+            chrom, components, time_data, experiment_name, proc_cfg.wavelength_nm
+        )
+        method = "MOCCA2_Component"
+    elif getattr(chrom, "peaks", None):
+        new_rows = processing._rows_from_peaks(chrom, time_data, experiment_name, proc_cfg.wavelength_nm)
+        method = "Manual_Trapezoid"
+    else:
+        new_rows = []
+        method = "(none)"
+    print(f"  Integration: {method}  ({len(new_rows)} rows)")
+
+    # ------------------------------------------------------------------
+    # 5. Patch peak_results.csv
+    # ------------------------------------------------------------------
+    peaks_df = pd.read_csv(cfg.peak_results_csv)
+    n_old = int((peaks_df["Folder"] == folder_name).sum())
+    peaks_df = peaks_df[peaks_df["Folder"] != folder_name].copy()
+
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        peaks_df = pd.concat([peaks_df, new_df], ignore_index=True)
+
+    # Recompute Area_Percent across the full (patched) dataset
+    totals = peaks_df.groupby(["Sample", "Folder"])["Area_Integral"].transform("sum")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        peaks_df["Area_Percent"] = np.where(
+            (totals > 0) & peaks_df["Area_Integral"].notna(),
+            peaks_df["Area_Integral"] / totals * 100,
+            np.nan,
+        )
+        peaks_df["Area_Percent"] = peaks_df["Area_Percent"].round(2)
+
+    peaks_df.to_csv(cfg.peak_results_csv, index=False)
+    print(f"  peak_results.csv: replaced {n_old} old rows with {len(new_rows)} new rows")
+
+    # ------------------------------------------------------------------
+    # 5b. Apply manual RT-bound integrations (optional)
+    # ------------------------------------------------------------------
+    _manual_plot_segs: list = []   # accumulated for preview plot in step 7
+    if manual_bounds:
+        time_data = processing._get_time(chrom)
+        # _get_signal returns chrom.data (single wavelength after extract_wavelength),
+        # which is already baseline-corrected in-place by chrom.correct_baseline() in
+        # _process_single — no additional baseline subtraction needed.
+        signal_raw = processing._get_signal(chrom)
+        if time_data is None or signal_raw is None:
+            print("  Warning: cannot apply manual bounds — chromatogram signal unavailable")
+        else:
+            peaks_df = pd.read_csv(cfg.peak_results_csv)
+            for compound_name, (left_rt, right_rt) in manual_bounds.items():
+                mask = (time_data >= left_rt) & (time_data <= right_rt)
+                if not mask.any():
+                    print(f"  Manual bounds {compound_name}: no data in {left_rt:.3f}–{right_rt:.3f} min — skipped")
+                    continue
+                seg_t = time_data[mask]
+                seg_s = signal_raw[mask]  # already baseline-corrected
+                # np.sum matches MOCCA's component.integral = np.sum(concentration) convention;
+                # np.trapezoid gives mAU·min which is ~50–100× smaller and breaks calibration.
+                area = float(np.sum(seg_s))
+                apex_idx = int(np.argmax(seg_s))
+                apex_rt = float(seg_t[apex_idx])
+                height = float(seg_s[apex_idx])
+
+                # remove any existing rows that fall within this RT window
+                in_window = (
+                    (peaks_df["Folder"] == folder_name) &
+                    (peaks_df["Retention_Time_min"] >= left_rt) &
+                    (peaks_df["Retention_Time_min"] <= right_rt)
+                )
+                n_removed = int(in_window.sum())
+                peaks_df = peaks_df[~in_window].copy()
+
+                new_row = {
+                    "Experiment":         experiment_name,
+                    "Folder":             folder_name,
+                    "Sample":             target_inj.sample_name,
+                    "Peak_Number":        999,
+                    "Retention_Time_min": round(apex_rt, 3),
+                    "Area_Integral":      round(area, 2),
+                    "Height_mAU":         round(height, 2),
+                    "Width_min":          round(float(right_rt - left_rt), 3),
+                    "Wavelength_nm":      proc_cfg.wavelength_nm,
+                    "Integration_Method": "Manual_Bounds",
+                    "Area_Percent":       float("nan"),
+                }
+                peaks_df = pd.concat([peaks_df, pd.DataFrame([new_row])], ignore_index=True)
+                _manual_plot_segs.append(
+                    (compound_name, left_rt, right_rt, seg_t, seg_s, area, apex_rt, height)
+                )
+                print(
+                    f"  Manual bounds {compound_name}: {left_rt:.3f}–{right_rt:.3f} min "
+                    f"→ area {area:.2f}, apex {apex_rt:.3f} min  (removed {n_removed} row(s))"
+                )
+
+            # recompute Area_Percent across the full patched dataset
+            totals = peaks_df.groupby(["Sample", "Folder"])["Area_Integral"].transform("sum")
+            with np.errstate(invalid="ignore", divide="ignore"):
+                peaks_df["Area_Percent"] = np.where(
+                    (totals > 0) & peaks_df["Area_Integral"].notna(),
+                    peaks_df["Area_Integral"] / totals * 100,
+                    np.nan,
+                )
+                peaks_df["Area_Percent"] = peaks_df["Area_Percent"].round(2)
+            peaks_df.to_csv(cfg.peak_results_csv, index=False)
+            print(f"  peak_results.csv: updated with manual bounds")
+
+    # ------------------------------------------------------------------
+    # 6. Patch chromatogram_traces.csv (if it exists)
+    # ------------------------------------------------------------------
+    traces_csv = cfg.results_dir / "chromatogram_traces.csv"
+    if traces_csv.exists():
+        traces_df = pd.read_csv(traces_csv)
+        traces_df = traces_df[traces_df["Folder"] != folder_name].copy()
+        if time_data is not None:
+            corrected = pc._corrected_signal(chrom)
+            new_trace_rows = [
+                {
+                    "Folder": folder_name,
+                    "Sample": target_inj.sample_name,
+                    "Time_min": round(float(t), 5),
+                    "Signal_mAU": round(float(s), 4),
+                }
+                for t, s in zip(time_data, corrected)
+            ]
+            traces_df = pd.concat([traces_df, pd.DataFrame(new_trace_rows)], ignore_index=True)
+        traces_df.to_csv(traces_csv, index=False)
+        print(f"  chromatogram_traces.csv: patched")
+
+    # ------------------------------------------------------------------
+    # 7. Re-render the per-injection PNG and refresh the HTML gallery
+    # ------------------------------------------------------------------
+    plots_dir = cfg.results_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+    safe_name = chrom.sample_name.replace(" ", "_").replace(",", "").replace("/", "-")
+    safe_exp = experiment_name.replace(" ", "_").replace("/", "-")
+    plot_path = plots_dir / f"{safe_exp}_{folder_name.replace('.D', '')}_{safe_name}.png"
+    pc.plot_chromatogram(chrom, proc_cfg.wavelength_nm, plot_path)
+    print(f"  Plot updated: {plot_path.name}")
+
+    if _manual_plot_segs:
+        _preview_path = plot_path.with_name(plot_path.stem + "_manual_preview.png")
+        pc.plot_manual_bounds_preview(
+            time_data=time_data,
+            signal_raw=signal_raw,
+            segments=_manual_plot_segs,
+            sample_name=chrom.sample_name,
+            folder_name=folder_name,
+            wavelength=proc_cfg.wavelength_nm,
+            save_path=_preview_path,
+        )
+        print(f"  Manual bounds preview: {_preview_path.name}")
+
+    pc.export_html_gallery(plots_dir, cfg.results_dir)
+
+    # ------------------------------------------------------------------
+    # 8. Re-run Stage 2 analysis
+    # ------------------------------------------------------------------
+    if not skip_analysis:
+        print()
+        _run_hplc_analysis(cfg)
+    else:
+        print("\n  Skipping Stage 2 (--skip-analysis). Run 'hplc analyze' when ready.")
+
+

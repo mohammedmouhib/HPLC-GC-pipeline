@@ -55,6 +55,12 @@ class GCCalibrationConfig:
     clamp_negative_to_zero: bool = True
     # Report samples whose qualifier ion-ratio failed as 0 uM (unconfirmed).
     require_ion_ratio_pass: bool = False
+    # Saturation correction: when a compound has a ``saturation_mz`` backup ion
+    # defined, high-concentration standards where the quantifier ion is
+    # flat-topped (area > expected from backup × linear ratio) are corrected.
+    # This value is the fractional excess above the linear-range quant/backup
+    # ratio that flags a point as saturated (e.g. 0.03 = 3% excess triggers correction).
+    saturation_ratio_tolerance: float = 0.03
 
 
 # ---------------------------------------------------------------------------
@@ -78,13 +84,19 @@ def unit_to_uM(unit: str) -> float:
 def parse_standard_name(name: str, pattern: str) -> Optional[tuple[str, float]]:
     """Decode a standard injection name into (compound, concentration_uM).
 
-    Returns None if ``name`` doesn't match ``pattern`` (i.e. it's a sample).
+    Returns None if ``name`` doesn't match ``pattern`` (i.e. it's a sample),
+    or if the pattern is empty / missing the required named groups.
     """
+    if not pattern:
+        return None
     m = re.match(pattern, str(name).strip())
     if not m:
         return None
-    conc = float(m.group("conc")) * unit_to_uM(m.group("unit"))
-    return m.group("compound"), conc
+    try:
+        conc = float(m.group("conc")) * unit_to_uM(m.group("unit"))
+        return m.group("compound"), conc
+    except (IndexError, KeyError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -130,36 +142,124 @@ def _fit(points: list[tuple[float, float]], force_origin: bool = False) -> Optio
 
 
 # ---------------------------------------------------------------------------
+# Saturation correction
+# ---------------------------------------------------------------------------
+
+def _correct_saturation(
+    triples: list[tuple[float, float, float]],
+    compound_name: str,
+    tolerance: float,
+) -> list[tuple[float, float]]:
+    """Detect and correct detector saturation in calibration standard points.
+
+    When a quantifier ion saturates (detector clips the signal), the recorded
+    peak area is artificially HIGH because the flat-topped peak occupies more
+    time at the clipped value.  This function detects that excess by comparing
+    the quant/backup ratio at each concentration against the median ratio of the
+    lowest-concentration (unsaturated) standards.  Points where the ratio
+    exceeds the reference by more than ``tolerance`` are replaced with
+    ``backup_area × reference_ratio``.
+
+    Parameters
+    ----------
+    triples : [(conc_uM, quant_area, backup_area), ...] sorted by concentration
+    compound_name : str  -- for diagnostic printing
+    tolerance : float   -- fractional excess (e.g. 0.03 = 3%) above reference
+                           ratio that flags a point as saturated
+    """
+    pts = sorted(triples)
+    ratios: list[Optional[float]] = [
+        q / b if b > 0 else None for _, q, b in pts
+    ]
+
+    # Reference ratio from the lowest-concentration half (assumed unsaturated)
+    n_ref = max(2, len(pts) // 2)
+    ref_values = [r for r in ratios[:n_ref] if r is not None]
+    if not ref_values:
+        return [(c, q) for c, q, _ in pts]
+    ref_ratio = float(np.median(ref_values))
+
+    corrected: list[tuple[float, float]] = []
+    n_fixed = 0
+    for i, (conc, quant, backup) in enumerate(pts):
+        r = ratios[i]
+        if r is not None and r > ref_ratio * (1.0 + tolerance) and backup > 0:
+            fixed = backup * ref_ratio
+            corrected.append((conc, fixed))
+            n_fixed += 1
+            print(f"    {compound_name} {conc:.0f} uM: area {quant:.0f} → {fixed:.0f} "
+                  f"(saturation corr., ratio {r:.3f} vs ref {ref_ratio:.3f})")
+        else:
+            corrected.append((conc, quant))
+
+    if n_fixed:
+        print(f"    → {compound_name}: {n_fixed} standard(s) corrected for quant-ion saturation")
+
+    return corrected
+
+
+# ---------------------------------------------------------------------------
 # Building the calibration (two sources)
 # ---------------------------------------------------------------------------
 
 def build_from_injections(peak_df: pd.DataFrame, pattern: str,
-                          force_origin: bool = False) -> dict[str, GCCalibration]:
+                          force_origin: bool = False,
+                          sat_tol: float = 0.03) -> dict[str, GCCalibration]:
     """Build calibrations from the standard rows of an integrated peak table.
 
     ``peak_df`` is the full Stage-1 GC peak table (standards + samples). Rows
     whose ``Sample`` matches ``pattern`` are treated as standards; their decoded
     concentration + integrated ``Area_Integral`` become calibration points.
+
+    When ``Saturation_Backup_Area`` is present, saturation correction is applied
+    per compound before fitting: points where the quant/backup ratio exceeds the
+    linear-range reference by more than ``sat_tol`` are corrected.
     """
     has_role = "Role" in peak_df.columns
+    has_backup = "Saturation_Backup_Area" in peak_df.columns
+
+    # points: compound -> list of (conc, area) for calib_probe and direct rows
+    # without backup data.
+    # backup_triples: compound -> list of (conc, area, backup_area) for direct
+    # standard rows that have backup data (saturation correction candidates).
     points: dict[str, list[tuple[float, float]]] = {}
+    backup_triples: dict[str, list[tuple[float, float, float]]] = {}
+
     for _, row in peak_df.iterrows():
         parsed = parse_standard_name(row["Sample"], pattern)
         if parsed is None:
             continue
         std_compound, conc_uM = parsed
         role = str(row["Role"]) if has_role else "sample"
+        area = float(row["Area_Integral"])
+
         if role == "calib_probe":
             # Surrogate curve: this compound's quantifier ion integrated over the
             # calibrant's peak. Use it only in the calibrant's own standards.
             if str(row.get("Calibrant")) != std_compound:
                 continue
-            points.setdefault(str(row["Compound"]), []).append((conc_uM, float(row["Area_Integral"])))
+            points.setdefault(str(row["Compound"]), []).append((conc_uM, area))
             continue
+
         # A standard injection is for one compound; only its own row contributes.
         if str(row["Compound"]) != std_compound:
             continue
-        points.setdefault(str(row["Compound"]), []).append((conc_uM, float(row["Area_Integral"])))
+
+        compound_name = str(row["Compound"])
+        backup = float(row["Saturation_Backup_Area"]) if (
+            has_backup and pd.notna(row.get("Saturation_Backup_Area"))
+        ) else None
+
+        if backup is not None:
+            backup_triples.setdefault(compound_name, []).append((conc_uM, area, backup))
+        else:
+            points.setdefault(compound_name, []).append((conc_uM, area))
+
+    # Apply saturation correction for compounds that have backup areas
+    for compound_name, triples in backup_triples.items():
+        corrected = _correct_saturation(triples, compound_name, sat_tol)
+        points.setdefault(compound_name, []).extend(corrected)
+
     return _finalise(points, force_origin)
 
 
@@ -209,7 +309,8 @@ def build_calibration(peak_df: pd.DataFrame, cfg: GCCalibrationConfig,
             csv_path = experiment_dir / cfg.standard_file
         return build_from_csv(csv_path, cfg.force_through_origin)
     if cfg.source == "injections":
-        return build_from_injections(peak_df, cfg.standard_pattern, cfg.force_through_origin)
+        return build_from_injections(peak_df, cfg.standard_pattern, cfg.force_through_origin,
+                                     sat_tol=cfg.saturation_ratio_tolerance)
     raise ValueError(f"unknown GC calibration source: {cfg.source!r} (use 'injections' or 'csv')")
 
 

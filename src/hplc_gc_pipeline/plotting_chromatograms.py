@@ -128,6 +128,49 @@ def plot_chromatogram(chrom, wavelength: int, save_path: Path) -> None:
     plt.close()
 
 
+def plot_manual_bounds_preview(
+    time_data: np.ndarray,
+    signal_raw: np.ndarray,
+    segments: list,
+    sample_name: str,
+    folder_name: str,
+    wavelength: int,
+    save_path: Path,
+) -> None:
+    """Chromatogram + shaded manual-integration windows + area/RT annotations.
+
+    signal_raw is expected to be already baseline-corrected (MOCCA corrects in-place).
+    """
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(time_data, signal_raw, color="0.35", lw=1.2, label="Corrected signal", zorder=2)
+
+    tab_colors = plt.cm.tab10.colors
+    for i, (name, left_rt, right_rt, seg_t, seg_corr, area, apex_rt, height) in enumerate(segments):
+        color = tab_colors[i % len(tab_colors)]
+        ax.fill_between(seg_t, 0, seg_corr, alpha=0.40, color=color, zorder=3, label=name)
+        ax.axvline(left_rt,  color=color, lw=1.2, ls="--", zorder=4)
+        ax.axvline(right_rt, color=color, lw=1.2, ls="--", zorder=4)
+        ax.text(
+            apex_rt, height * 1.04,
+            f"{name}\nArea: {area:.0f}\n@ {apex_rt:.3f} min",
+            ha="center", va="bottom", fontsize=9, color=color,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.90),
+            zorder=5,
+        )
+
+    ax.set_xlabel("Retention Time (min)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Intensity (mAU)", fontsize=11, fontweight="bold")
+    ax.set_title(
+        f"{sample_name}  ({folder_name})  @ {wavelength} nm  —  Manual bounds integration",
+        fontsize=12, fontweight="bold",
+    )
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
+    ax.grid(True, alpha=0.3, ls="--")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
 # ---------------------------------------------------------------------------
 # Static overlay
 # ---------------------------------------------------------------------------

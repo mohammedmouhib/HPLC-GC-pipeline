@@ -145,11 +145,11 @@ class OutputConfig:
 
 @dataclass
 class GCSampleNameConfig:
-    # GC sample names use underscores: "<time_h>_<strain>_<replicate>" (e.g.
-    # "50_s11_A"), unlike the comma-separated HPLC convention. Standards
-    # ("250uM_34DMS_hexane") don't match and are skipped.
+    # GC sample names use either underscore ("50_s11_A") or comma ("50, s11, A")
+    # separators. The default pattern accepts both. Standards ("250uM_34DMS_hexane")
+    # don't match and are skipped automatically.
     pattern: str = (
-        r"^\s*(?P<time>\d+)\s*_\s*(?P<strain>[^_]+?)\s*_\s*(?P<replicate>[A-Za-z])\s*$"
+        r"^\s*(?P<time>\d+)\s*[_,]\s*(?P<strain>[^_,]+?)\s*[_,]\s*(?P<replicate>[A-Za-z])\s*$"
     )
 
 
@@ -283,7 +283,7 @@ def _from_dict(cls, data: Any):
         )
 
     for name, f in field_map.items():
-        if name not in data:
+        if name not in data or data[name] is None or data[name] == "":
             continue
         value = data[name]
         # Nested dataclass? recurse.
@@ -329,7 +329,7 @@ def load_config(experiment_dir: Path, explicit_config: Optional[Path] = None) ->
     # A config with none of these defaults to HPLC (backward compatible).
     hplc_block = raw.get("hplc") if isinstance(raw.get("hplc"), dict) else raw
     modalities = []
-    if any(k in raw for k in ("hplc", "processing", "analysis")):
+    if any(k in raw for k in ("hplc", "processing")):
         modalities.append("hplc")
     if "gc" in raw:
         modalities.append("gc")
@@ -347,6 +347,13 @@ def load_config(experiment_dir: Path, explicit_config: Optional[Path] = None) ->
     )
     cfg.modalities = modalities
     cfg.experiment_dir = experiment_dir
+
+    # Old config templates (pre-fix) wrote dilution_factor: 0.0 as a placeholder.
+    # Treat 0.0 as "not set" and fall back to the default of 1.0 (no dilution).
+    if cfg.analysis.calibration.dilution_factor <= 0:
+        cfg.analysis.calibration.dilution_factor = 1.0
+    if cfg.gc is not None and cfg.gc.calibration.dilution_factor <= 0:
+        cfg.gc.calibration.dilution_factor = 1.0
 
     _validate(cfg)
     return cfg
@@ -398,8 +405,9 @@ def _build_gc_processing(data: Any) -> GCProcessingConfig:
     data = data or {}
     _check_keys(data, GCProcessingConfig, "gc.processing")
     defaults = GCProcessingConfig()
+    _qc = data.get("quant_channel")
     return GCProcessingConfig(
-        quant_channel=data.get("quant_channel", defaults.quant_channel),
+        quant_channel=_qc if _qc is not None else defaults.quant_channel,
         peak_detection=_from_dict(GCPeakDetectionConfig, data.get("peak_detection")),
         baseline=_from_dict(GCBaselineConfig, data.get("baseline")),
     )

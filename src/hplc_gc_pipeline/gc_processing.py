@@ -80,6 +80,12 @@ class GCCompound:
     # shared-fragment / response-factor assumption) and this compound has no
     # dedicated standard of its own.
     calibrate_as: Optional[str] = None
+    # Backup ion m/z for saturation correction: when the quantifier ion is near
+    # detector saturation in high-concentration standards, its peak area is
+    # artificially high (flat-topped peak). Integrating this backup ion instead
+    # and scaling by the quant/backup ratio from the linear range recovers a
+    # corrected area. Leave None to disable saturation correction.
+    saturation_mz: Optional[float] = None
 
     @property
     def calibrant(self) -> str:
@@ -131,6 +137,8 @@ def load_gc_compounds(compounds_csv: Path) -> list[GCCompound]:
         quals = _parse_qualifiers(r.get("qualifier_mz"))
         tol = float(r["ion_ratio_tol"]) if "ion_ratio_tol" in df.columns and pd.notna(r.get("ion_ratio_tol")) else 0.30
         cal_as = str(r["calibrate_as"]).strip() if "calibrate_as" in df.columns and pd.notna(r.get("calibrate_as")) else ""
+        sat_mz_raw = r.get("saturation_mz") if "saturation_mz" in df.columns else None
+        sat_mz = float(sat_mz_raw) if sat_mz_raw is not None and pd.notna(sat_mz_raw) else None
         c = GCCompound(
             name=str(r["Compound"]),
             rt_low=float(r["RT_low"]),
@@ -139,14 +147,16 @@ def load_gc_compounds(compounds_csv: Path) -> list[GCCompound]:
             qualifiers=quals,
             ion_ratio_tol=tol,
             calibrate_as=cal_as or None,
+            saturation_mz=sat_mz,
         )
         compounds.append(c)
         qual_str = ", ".join(
             f"{int(m)}" + (f"={ratio:.2f}" if ratio is not None else "") for m, ratio in quals
         ) or "(none)"
         cal_note = f" | calibrated as {c.calibrant}" if c.calibrate_as else ""
+        sat_note = f" | sat.backup m/z {int(c.saturation_mz)}" if c.saturation_mz else ""
         print(f"  {c.name:<16} RT {c.rt_low:.2f}-{c.rt_high:.2f} min | "
-              f"quant m/z {int(c.quantifier_mz)} | qualifiers {qual_str}{cal_note}")
+              f"quant m/z {int(c.quantifier_mz)} | qualifiers {qual_str}{cal_note}{sat_note}")
     return compounds
 
 
@@ -288,10 +298,34 @@ def _qualifier_report(traces: GCTraces, compound: GCCompound,
 # Peak-table extraction
 # ---------------------------------------------------------------------------
 
+def _compute_backup_area(traces: GCTraces, backup_mz: float,
+                         result: GCPeakResult,
+                         baseline_cfg: GCBaselineConfig) -> float:
+    """Integrate the saturation-backup ion over the same bounds as the primary peak.
+
+    Used by :func:`build_gc_peak_table` when ``compound.saturation_mz`` is set.
+    Returns ``nan`` when the backup m/z is not in the SIM method or the peak
+    was not detected.
+    """
+    if result.left_idx is None or result.right_idx is None:
+        return float("nan")
+    try:
+        raw = traces.eic_for(backup_mz)
+    except ValueError:
+        return float("nan")
+    bl = als_baseline(raw, baseline_cfg.lam, baseline_cfg.p, baseline_cfg.niter)
+    corr = raw - bl
+    lo, hi = result.left_idx, result.right_idx + 1
+    seg_t = traces.time_min[lo:hi]
+    seg_y = np.clip(corr[lo:hi], 0, None)
+    return float(np.trapezoid(seg_y, seg_t)) if hi > lo + 1 else 0.0
+
+
 def _peak_row(inj: GCInjection, compound: GCCompound, cfg: GCProcessingConfig,
               res: GCPeakResult, qual_str: str, qual_pass: Optional[bool],
               role: str, rt_low: Optional[float] = None,
-              rt_high: Optional[float] = None) -> dict:
+              rt_high: Optional[float] = None,
+              backup_area: float = float("nan")) -> dict:
     """Assemble one peak-table row.
 
     ``role`` is ``"sample"`` for the normal quantifier integration or
@@ -319,7 +353,15 @@ def _peak_row(inj: GCInjection, compound: GCCompound, cfg: GCProcessingConfig,
         "Ion_Ratio_Pass": qual_pass,
         "Detected": res.detected,
         "Integration_Method": f"GC_{cfg.quant_channel.upper()}_Trapezoid",
+        "Saturation_Backup_Area": round(backup_area, 2) if not _isnan(backup_area) else float("nan"),
     }
+
+
+def _isnan(x) -> bool:
+    try:
+        return bool(x != x)  # NaN != NaN is True
+    except TypeError:
+        return False
 
 
 def build_gc_peak_table(injections: list[GCInjection], compounds: list[GCCompound],
@@ -356,12 +398,18 @@ def build_gc_peak_table(injections: list[GCInjection], compounds: list[GCCompoun
                     qual_str, qual_pass = _qualifier_report(traces, compound, res)
                 if res.detected:
                     n_detected += 1
+                # Saturation backup: integrate backup ion at same bounds (EIC mode only)
+                bkp = float("nan")
+                if compound.saturation_mz is not None and res.detected and cfg.quant_channel == "eic":
+                    bkp = _compute_backup_area(traces, compound.saturation_mz, res, cfg.baseline)
             except Exception as exc:
                 print(f"      {inj.sample_name} / {compound.name}: {exc}")
                 res = GCPeakResult(False, None, 0.0, 0.0, None, None, None, 0.0)
                 qual_str, qual_pass = "", None
+                bkp = float("nan")
 
-            rows.append(_peak_row(inj, compound, cfg, res, qual_str, qual_pass, role="sample"))
+            rows.append(_peak_row(inj, compound, cfg, res, qual_str, qual_pass,
+                                  role="sample", backup_area=bkp))
 
             # Surrogate calibration: when a compound borrows another's standards,
             # also integrate THIS compound's quantifier ion over the CALIBRANT's

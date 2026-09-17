@@ -366,3 +366,145 @@ def generate_plots(consolidated_df, stats_df, analysis_dir: Path,
     print(f"   area: {len(summary_area)} summary, {len(raw_area)} raw, {len(combined_area)} combined, {len(bars_area)} bars")
     print(f"   uM  : {len(summary_conc)} summary, {len(raw_conc)} raw, {len(combined_conc)} combined, {len(bars_conc)} bars")
     return html_path
+
+
+# ---------------------------------------------------------------------------
+# Induction heatmaps
+# ---------------------------------------------------------------------------
+
+def plot_induction_heatmaps(consolidated_df: pd.DataFrame, analysis_dir: Path) -> None:
+    """Generate induction-time and inducer-concentration heatmaps.
+
+    Auto-detects strain groups by name:
+      - Induction time  : strains containing ``ind<N>ng`` plus ``ind<N>t<H>h``
+        variants (e.g. s21ind200ng=0 h, s21ind200t4h=4 h).
+      - Inducer conc    : strains matching ``ind<N>ng`` without a time suffix,
+        plus a bare uninduced strain (e.g. s21=0 ng).
+
+    Produces two PNG files in ``analysis_dir``:
+      heatmap_induction_time.png
+      heatmap_inducer_conc.png
+    """
+    import re
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+
+    analysis_dir = Path(analysis_dir)
+    strains = consolidated_df["Strain"].dropna().unique().tolist()
+    compounds = sorted(consolidated_df["Compound"].dropna().unique().tolist())
+    time_points = sorted(consolidated_df["Time_Point_h"].dropna().unique().astype(int).tolist())
+
+    # --- auto-detect strain groups ---
+
+    # Find the inducer dose that has a time-series (e.g. 200 in s21ind200t2h).
+    time_series_doses = set()
+    for s in strains:
+        m = re.search(r'ind(\d+)t\d+h', s)
+        if m:
+            time_series_doses.add(int(m.group(1)))
+
+    ind_time_map: dict[str, int] = {}   # strain -> induction time (h)
+    ind_conc_map: dict[str, int] = {}   # strain -> inducer dose  (ng)
+
+    for s in strains:
+        # Time-series variants: s21ind200t4h -> 4 h
+        mt = re.search(r'ind(\d+)t(\d+)h$', s)
+        if mt and int(mt.group(1)) in time_series_doses:
+            ind_time_map[s] = int(mt.group(2))
+            continue
+        # Base dose strain (no time suffix): s21ind200ng -> 0 h
+        mc = re.search(r'ind(\d+)ng$', s)
+        if mc and int(mc.group(1)) in time_series_doses:
+            ind_time_map[s] = 0
+        # Concentration screen strains (fixed time, varying dose): s21ind50ng -> 50 ng
+        if mc and int(mc.group(1)) not in time_series_doses:
+            ind_conc_map[s] = int(mc.group(1))
+        # Also include the base dose (200 ng) in the concentration screen
+        if mc and int(mc.group(1)) in time_series_doses:
+            ind_conc_map[s] = int(mc.group(1))
+        # Uninduced: bare strain with no "ind" suffix
+        if not re.search(r'ind', s):
+            ind_conc_map[s] = 0
+
+    def _make_png(strain_x_map: dict, x_label: str, x_unit: str, save_path: Path) -> None:
+        if not strain_x_map:
+            return
+        sub = consolidated_df[consolidated_df["Strain"].isin(strain_x_map)].copy()
+        sub["x_val"] = sub["Strain"].map(strain_x_map)
+
+        x_order = sorted(set(strain_x_map.values()))
+        vmax = sub["Concentration_uM"].max()
+        if not np.isfinite(vmax) or vmax == 0:
+            vmax = 1.0
+
+        n_tp = len(time_points)
+        fig, axes = plt.subplots(
+            1, n_tp,
+            figsize=(max(3, 1.2 * len(x_order)) * n_tp, 1.0 + 0.8 * len(compounds)),
+            sharey=True,
+        )
+        if n_tp == 1:
+            axes = [axes]
+
+        cmap = plt.cm.viridis
+        norm = plt.Normalize(vmin=0, vmax=vmax)
+
+        for ax, tp in zip(axes, time_points):
+            df_tp = sub[sub["Time_Point_h"] == tp]
+            grp = (
+                df_tp.groupby(["Compound", "x_val"])["Concentration_uM"]
+                .mean()
+                .reset_index()
+            )
+            data = np.zeros((len(compounds), len(x_order)))
+            for i, cmpd in enumerate(compounds):
+                for j, xv in enumerate(x_order):
+                    hit = grp[(grp["Compound"] == cmpd) & (grp["x_val"] == xv)]
+                    if len(hit):
+                        data[i, j] = float(hit["Concentration_uM"].iat[0])
+
+            im = ax.imshow(data, aspect="auto", cmap=cmap, norm=norm,
+                           interpolation="nearest")
+            ax.set_xticks(range(len(x_order)))
+            ax.set_xticklabels([str(x) for x in x_order], fontsize=9)
+            ax.set_yticks(range(len(compounds)))
+            if ax is axes[0]:
+                ax.set_yticklabels(compounds, fontsize=9)
+            ax.set_xlabel(f"{x_label} ({x_unit})", fontsize=9)
+            ax.set_title(f"t = {int(tp)} h", fontsize=10, fontweight="bold")
+
+            # Cell annotations
+            for i in range(len(compounds)):
+                for j in range(len(x_order)):
+                    val = data[i, j]
+                    brightness = norm(val)
+                    txt_color = "white" if brightness < 0.55 else "black"
+                    ax.text(j, i, f"{val:.1f}", ha="center", va="center",
+                            fontsize=8, color=txt_color, fontweight="bold")
+
+        # Shared colour bar in a dedicated axis to avoid overlapping the panels.
+        fig.subplots_adjust(left=0.08, right=0.88, top=0.88, bottom=0.18, wspace=0.06)
+        cbar_ax = fig.add_axes([0.90, 0.18, 0.015, 0.70])
+        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cbar_ax)
+        cbar.set_label("Concentration (µM)", fontsize=9)
+        cbar.ax.tick_params(labelsize=8)
+
+        fig.suptitle(f"{x_label} screen — {', '.join(compounds)}",
+                     fontsize=11, fontweight="bold")
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Heatmap: {save_path.name}")
+
+    if ind_time_map:
+        _make_png(ind_time_map, "Induction time", "h",
+                  analysis_dir / "heatmap_induction_time.png")
+    else:
+        print("  Heatmap: no induction-time strains detected — skipped")
+
+    if ind_conc_map:
+        _make_png(ind_conc_map, "Inducer concentration", "ng",
+                  analysis_dir / "heatmap_inducer_conc.png")
+    else:
+        print("  Heatmap: no inducer-concentration strains detected — skipped")

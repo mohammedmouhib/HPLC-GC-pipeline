@@ -79,6 +79,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ip.add_argument("--debug", action="store_true", help="Show full traceback on error")
 
+    rp = sub.add_parser(
+        "reintegrate",
+        help="Re-process one injection and patch Stage 1 outputs, then re-run analysis",
+    )
+    rp.add_argument("experiment_dir", type=Path, help="Path to the experiment folder")
+    rp.add_argument("--injection", required=True, metavar="FOLDER",
+                    help="Folder name of the injection to re-process (e.g. 046-0401.D)")
+    rp.add_argument("--config", type=Path, default=None,
+                    help="Config YAML (default: <experiment_dir>/hplc_config.yaml)")
+    rp.add_argument("--min-r2", type=float, default=None, metavar="R2",
+                    help="Override deconvolution.min_r2 for this injection only")
+    rp.add_argument("--max-comps", type=int, default=None, metavar="N",
+                    help="Override deconvolution.max_comps for this injection only")
+    rp.add_argument("--min-height", type=float, default=None, metavar="H",
+                    help="Override peak_detection.min_height for this injection only")
+    rp.add_argument("--min-prominence", type=float, default=None, metavar="P",
+                    help="Override peak_detection.min_prominence for this injection only")
+    rp.add_argument("--no-deconvolution", action="store_true",
+                    help="Disable MOCCA2 deconvolution; use manual trapezoid integration")
+    rp.add_argument(
+        "--bounds", action="append", metavar="COMPOUND=LEFT:RIGHT", default=None,
+        help=(
+            "Integrate the raw chromatogram between LEFT and RIGHT minutes for COMPOUND "
+            "using trapezoid, replacing any peaks in that RT window. "
+            "Can be given multiple times: --bounds pCA=6.35:6.52 --bounds FA=6.52:6.85"
+        ),
+    )
+    rp.add_argument("--skip-analysis", action="store_true",
+                    help="Patch peak_results.csv only; do not re-run Stage 2 analysis")
+    rp.add_argument("--debug", action="store_true", help="Show full traceback on error")
+
     gp = sub.add_parser("gui", help="Launch the web GUI (needs the 'gui' extra)")
     gp.add_argument("experiment_dir", type=Path, nargs="?", default=None,
                     help="Experiment folder to preload (optional; can be set in the GUI)")
@@ -195,13 +226,38 @@ def main(argv=None) -> int:
             _run_init(args)
             return 0
         cfg = load_config(args.experiment_dir, args.config)
-        _apply_modality_filter(cfg, args.modality)
+        _apply_modality_filter(cfg, getattr(args, "modality", None))
         if args.command == "process":
             pipeline.run_processing(cfg)
         elif args.command == "analyze":
             pipeline.run_analysis(cfg)
         elif args.command == "run":
             pipeline.run_all(cfg)
+        elif args.command == "reintegrate":
+            manual_bounds = None
+            if args.bounds:
+                manual_bounds = {}
+                for spec in args.bounds:
+                    try:
+                        compound, rng = spec.split("=", 1)
+                        left, right = rng.split(":", 1)
+                        manual_bounds[compound.strip()] = (float(left), float(right))
+                    except ValueError:
+                        raise ValueError(
+                            f"Invalid --bounds format '{spec}'. "
+                            f"Expected COMPOUND=LEFT:RIGHT, e.g. pCA=6.35:6.52"
+                        )
+            pipeline.reintegrate_injection(
+                cfg,
+                args.injection,
+                min_r2=args.min_r2,
+                max_comps=args.max_comps,
+                min_height=args.min_height,
+                min_prominence=args.min_prominence,
+                no_deconvolution=args.no_deconvolution,
+                manual_bounds=manual_bounds,
+                skip_analysis=args.skip_analysis,
+            )
     except USER_ERRORS as exc:
         if args.debug:
             traceback.print_exc()

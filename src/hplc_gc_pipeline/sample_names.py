@@ -79,6 +79,9 @@ def pool_replicates_across_experiments(df: pd.DataFrame, group_cols=None) -> pd.
     unused letter.
     """
     df = df.copy()
+    if df.empty:
+        df["Replicate_Group"] = pd.Series(dtype=str)
+        return df
     letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
     if group_cols is None:
         group_cols = ["Strain", "Time_Point_h"]
