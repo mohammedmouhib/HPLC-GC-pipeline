@@ -3,8 +3,8 @@
 A reusable, config-driven pipeline for **HPLC and GC-MS** data from metabolic
 engineering experiments. It processes Agilent Chemstation `.D` injection folders,
 integrates chromatographic peaks, assigns them to named compounds, applies linear
-calibration curves to convert areas to µM concentrations, and generates
-publication-quality plots.
+calibration curves to convert areas to µM concentrations, and generates plots and
+summary CSVs.
 
 The program is fully separated from experiment data: you point it at any
 experiment folder, and every tunable value lives in that folder's
@@ -34,7 +34,7 @@ omit it for HPLC-only. Use `--modality hplc|gc` to run just one.
 Requires Python ≥ 3.10.
 
 ```bash
-git clone <your-repo-url> HPLC_GC_pipeline
+git clone https://github.com/mohammedmouhib/HPLC-GC-pipeline HPLC_GC_pipeline
 cd HPLC_GC_pipeline
 python -m venv .venv && source .venv/bin/activate
 pip install -e .          # installs deps and the `hplc` command
@@ -158,6 +158,14 @@ directory:
    a manual trapezoid over the baseline-corrected signal. The
    `Integration_Method` column records which path was used.
 5. Write the peak table, traces, and plots.
+
+**Verifying peak picking and integration.** Before trusting Stage 2 results,
+open `results/chromatogram_gallery.html` (HPLC) or
+`gc_results/gc_tic_overlay_interactive.html` (GC). Check that detected peaks are
+correctly placed, the baseline is sensible, and no injections were missed or
+misidentified. If a peak was integrated incorrectly you can re-run a single
+injection with `hplc reintegrate` (see below) without reprocessing the whole
+dataset.
 
 **Stage 2 — `hplc analyze`**
 1. Parse sample names → strain / time / replicate; pool duplicate replicate
