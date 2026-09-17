@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hplc-gc-pipeline"
 version = "0.1.0"
-description = "Config-driven HPLC (MOCCA2) data-processing pipeline for metabolic engineering experiments"
+description = "Config-driven HPLC + GC-MS data-processing pipeline for metabolic engineering experiments"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 dependencies = [
     "mocca2",
     "rainbow-api",
@@ -40,4 +40,5 @@ hplc_gc_pipeline = [
     "gui/config_template.yaml",
     "gui/compounds_default.csv",
     "gui/standard_default.csv",
+    "gui/gc_compounds_default.csv",
 ]
